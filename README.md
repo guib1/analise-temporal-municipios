@@ -1,5 +1,8 @@
 # analise-temporal-municipios
 
 ## Dependencies
-- python 3.11
-- python3.11-devel
+- python3.11
+
+Fedora: python3.11-devel
+Ubuntu/Debian: python3.11-dev
+- python3.11-distutils
