@@ -1,16 +1,7 @@
-"""
-Utilities to download and aggregate DataSUS SIH/SUS hospitalisation data
-for a given municipality (IBGE code) using the PySUS client.
-
-The main entry point is :func:`fetch_sih_asthma_weekly`, which downloads the
-monthly records for the requested UF, filters the rows that match the
-municipality and CID-10 codes, and aggregates the totals into weekly
-indicators compatible with the project's glossary.
-"""
-
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -54,7 +45,6 @@ UF_BY_CODE = {
 # CID-10 codes that cover asthma diagnoses.
 DEFAULT_ASMA_CODES = ("J45", "J450", "J451", "J452", "J453", "J454", "J455", "J456", "J459")
 
-
 def _read_parquet_directory(path: Path) -> Optional[List[pd.DataFrame]]:
     """Load all parquet files inside a directory as dataframes."""
     if not path.exists() or not path.is_dir():
@@ -72,9 +62,6 @@ def _read_parquet_directory(path: Path) -> Optional[List[pd.DataFrame]]:
 
 
 def _normalize_ibge_codes(cod_ibge: str | int) -> Tuple[str, str]:
-    """
-    Return both 7-digit and 6-digit (old IBGE) municipality codes as zero padded strings.
-    """
     code = str(cod_ibge).strip()
     if not code.isdigit():
         raise ValueError(f"Invalid IBGE code {cod_ibge!r}")
@@ -82,9 +69,7 @@ def _normalize_ibge_codes(cod_ibge: str | int) -> Tuple[str, str]:
     code6 = code7[:6]
     return code6, code7
 
-
 def _iter_year_month(start: date, end: date) -> Iterable[Tuple[int, int]]:
-    """Yield (year, month) pairs between start and end inclusive."""
     if start > end:
         raise ValueError("start date must be <= end date")
     year, month = start.year, start.month
@@ -95,7 +80,6 @@ def _iter_year_month(start: date, end: date) -> Iterable[Tuple[int, int]]:
             year += 1
         else:
             month += 1
-
 
 def _decode_age_to_years(raw_age: Optional[str | int]) -> Optional[float]:
     """
@@ -125,9 +109,7 @@ def _decode_age_to_years(raw_age: Optional[str | int]) -> Optional[float]:
         return float(magnitude)
     return None
 
-
 def _categorise_age(df: pd.DataFrame) -> pd.DataFrame:
-    """Add boolean columns for the age groups defined in the glossary."""
     age_years = df["age_years"]
     df["age_0_sum"] = ((age_years.notna()) & (age_years <= 0)).astype("Int64")
     df["age_1_10_sum"] = ((age_years >= 1) & (age_years <= 10)).astype("Int64")
@@ -142,21 +124,16 @@ def _categorise_age(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parse_sih_dates(series: pd.Series) -> pd.Series:
-    """
-    Convert SIH/SUS DT_INTER column (date of admission) to pandas datetime.
-    """
     # The field may already be datetime, integer yyyymmdd, or string.
     return pd.to_datetime(series, errors="coerce", format="%Y%m%d")
 
 
 @dataclass
 class DataSUSDownloader:
-    """
-    Helper class that handles downloading, caching, and parsing SIH/SUS files.
-    """
 
     cache_dir: Path = Path("data/datasus/raw")
     storage_format: str = "parquet"  # "parquet" (default from PySUS) or "csv"
+    cleanup_cache: bool = True
 
     def __post_init__(self) -> None:
         self.cache_dir = Path(self.cache_dir)
@@ -165,15 +142,27 @@ class DataSUSDownloader:
         if self.storage_format not in {"parquet", "csv"}:
             raise ValueError("storage_format must be 'parquet' or 'csv'")
 
-    # --------------------------------------------------------------------- #
-    # Download helpers
-    # --------------------------------------------------------------------- #
+    def _monthly_base_name(self, uf_sigla: str, year: int, month: int) -> str:
+        return f"RD{uf_sigla}{str(year)[-2:]}{month:02d}"
+
+    def _cleanup_month_files(self, base_name: str) -> None:
+        targets = [
+            self.cache_dir / f"{base_name}.csv",
+            self.cache_dir / f"{base_name}.parquet",
+        ]
+        for path in targets:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                LOGGER.warning("Failed to remove cached file %s: %s", path, exc)
+
     def _download_month(self, uf_sigla: str, year: int, month: int) -> pd.DataFrame:
-        """
-        Use PySUS to download a single month's SIH/SUS records for a UF and
-        return them as a pandas DataFrame.
-        """
-        base_name = f"RD{uf_sigla}{str(year)[-2:]}{month:02d}"
+        base_name = self._monthly_base_name(uf_sigla, year, month)
         if self.storage_format == "csv":
             csv_path = self.cache_dir / f"{base_name}.csv"
             if csv_path.exists():
@@ -237,7 +226,7 @@ class DataSUSDownloader:
         return df_month
 
     # --------------------------------------------------------------------- #
-    # Public API
+    # Public API>
     # --------------------------------------------------------------------- #
     def fetch_sih_asthma_weekly(
         self,
@@ -278,11 +267,18 @@ class DataSUSDownloader:
         except KeyError as exc:
             raise KeyError(f"Unknown UF for IBGE code {code7}") from exc
 
+        months = list(_iter_year_month(start_date.replace(day=1), end_date.replace(day=1)))
         frames: List[pd.DataFrame] = []
-        for year, month in _iter_year_month(start_date.replace(day=1), end_date.replace(day=1)):
-            df_month = self._download_month(uf_sigla, year, month)
-            if not df_month.empty:
-                frames.append(df_month)
+        try:
+            for year, month in months:
+                df_month = self._download_month(uf_sigla, year, month)
+                if not df_month.empty:
+                    frames.append(df_month)
+        finally:
+            if self.cleanup_cache:
+                for year, month in months:
+                    base_name = self._monthly_base_name(uf_sigla, year, month)
+                    self._cleanup_month_files(base_name)
 
         if not frames:
             LOGGER.warning("No data downloaded for %s between %s and %s", code7, start, end)
@@ -295,6 +291,13 @@ class DataSUSDownloader:
             cid10_prefixes=cid10_prefixes,
             start=start_date,
             end=end_date,
+        )
+        LOGGER.info(
+            "Found %d SIH records for %s between %s and %s after filtering",
+            len(filtered),
+            code7,
+            start_date,
+            end_date,
         )
         if filtered.empty:
             LOGGER.warning("No SIH records found for %s in the selected period", code7)
@@ -381,7 +384,7 @@ class DataSUSDownloader:
         df["date"] = (
             df["DT_INTER"]
             .dt.to_period("W-SUN")
-            .dt.to_timestamp("end")
+            .dt.to_timestamp(how="end")
             .dt.normalize()
         )
 
@@ -452,15 +455,14 @@ def _empty_weekly_dataframe() -> pd.DataFrame:
     ]
     return pd.DataFrame(columns=columns)
 
-
 if __name__ == "__main__":
     # Basic manual test (requires network access and supporting libraries).
     logging.basicConfig(level=logging.INFO)
     downloader = DataSUSDownloader(storage_format="csv")
     df_result = downloader.fetch_sih_asthma_weekly(
         cod_ibge="3550308",
-        start="2000-01-01",
-        end="2000-12-31",
-        output_csv="data/datasus/weekly_3550308_asma.csv",
+        start="2025-01-01",
+        end="2025-12-31",
+        output_csv="data/output/datasus/weekly_3550308_asma.csv",
     )
     print(df_result.head())

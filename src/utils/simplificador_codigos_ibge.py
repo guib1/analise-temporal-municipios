@@ -6,7 +6,6 @@ SOURCE_XLS = Path("data/raw_input_reference/RELATORIO_DTB_BRASIL_2024_DISTRITOS.
 TARGET_CSV = Path("data/utils/municipios_ibge.csv")
 COLUMNS = ["Código Município Completo", "Nome_UF", "Nome_Município"]
 
-
 df = pd.read_excel(SOURCE_XLS, engine="xlrd", skiprows=6, usecols=COLUMNS)
 df = df.dropna(subset=["Código Município Completo"])
 df["Código Município Completo"] = (
