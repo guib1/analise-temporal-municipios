@@ -95,6 +95,11 @@ def _decode_age_to_years(raw_age: Optional[str | int]) -> Optional[float]:
         value = int(raw_age)
     except (TypeError, ValueError):
         return None
+    if value < 0:
+        return None
+    # Some PySUS versions already return age directly in years (0-999).
+    if value < 1000:
+        return float(value)
     unit = value // 1000
     magnitude = value % 1000
     if unit == 0:
@@ -171,9 +176,9 @@ class DataSUSDownloader:
 
         parquet_dir = self.cache_dir / f"{base_name}.parquet"
         if parquet_dir.exists():
-            frames = _read_parquet_directory(parquet_dir)
-            if frames is not None:
-                df_cached = pd.concat(frames, ignore_index=True)
+            frames_opt = _read_parquet_directory(parquet_dir)
+            if frames_opt is not None:
+                df_cached = pd.concat(frames_opt, ignore_index=True)
                 if self.storage_format == "csv":
                     csv_path = self.cache_dir / f"{base_name}.csv"
                     df_cached.to_csv(csv_path, index=False)
@@ -381,12 +386,13 @@ class DataSUSDownloader:
 
     def _aggregate_weekly(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df["date"] = (
+        week_end = (
             df["DT_INTER"]
             .dt.to_period("W-SUN")
             .dt.to_timestamp(how="end")
-            .dt.normalize()
         )
+        normalized = pd.DatetimeIndex(week_end).normalize()
+        df["date"] = pd.Series(normalized, index=df.index)
 
         agg_dict = {
             "cases_sum": "sum",
