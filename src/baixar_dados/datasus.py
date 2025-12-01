@@ -136,7 +136,7 @@ def _parse_sih_dates(series: pd.Series) -> pd.Series:
 @dataclass
 class DataSUSDownloader:
 
-    cache_dir: Path = Path("data/datasus/raw")
+    cache_dir: Path = Path("data/cache_data")
     storage_format: str = "parquet"  # "parquet" (default from PySUS) or "csv"
     cleanup_cache: bool = True
 
