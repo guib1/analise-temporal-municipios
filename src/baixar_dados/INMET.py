@@ -1,11 +1,14 @@
 from __future__ import annotations
 import os
 import logging
+import zipfile
+import requests
+import io
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Tuple
 import pandas as pd
 import numpy as np
-from inmetpy.stations import InmetStation
+# from inmetpy.stations import InmetStation  # Deprecated
 
 try:
     import geopandas as gpd
@@ -18,15 +21,50 @@ LOGGER = logging.getLogger(__name__)
 class INMETDownloader:
     """
     Downloads INMET data for a given shapefile/municipality by finding the nearest station.
+    Uses historical CSV data from portal.inmet.gov.br as the API is deprecated/restricted.
     """
 
+    CACHE_DIR = "data/cache/inmet_zips"
+
     def __init__(self):
-        self.inmet = InmetStation()
+        # self.inmet = InmetStation()
         self._stations_cache = None
+        os.makedirs(self.CACHE_DIR, exist_ok=True)
 
     def _get_stations(self) -> pd.DataFrame:
         if self._stations_cache is None:
-            self._stations_cache = self.inmet.get_stations()
+            # Fetch stations directly from API (metadata endpoint seems to still work)
+            try:
+                response = requests.get("https://apitempo.inmet.gov.br/estacoes/T")
+                if response.status_code == 200:
+                    data = response.json()
+                    self._stations_cache = pd.DataFrame(data)
+                    
+                    # Rename columns to match previous inmetpy structure if needed
+                    # inmetpy used: CD_STATION, STATION_NAME, TP_STATION, LATITUDE, LONGITUDE
+                    # API returns: CD_ESTACAO, DC_NOME, TP_ESTACAO, VL_LATITUDE, VL_LONGITUDE
+                    rename_map = {
+                        'CD_ESTACAO': 'CD_STATION',
+                        'DC_NOME': 'STATION_NAME',
+                        'TP_ESTACAO': 'TP_STATION',
+                        'VL_LATITUDE': 'LATITUDE',
+                        'VL_LONGITUDE': 'LONGITUDE'
+                    }
+                    self._stations_cache.rename(columns=rename_map, inplace=True)
+                    
+                    # Map TP_STATION values: 'Automatica' -> 'Automatic'
+                    self._stations_cache['TP_STATION'] = self._stations_cache['TP_STATION'].replace({
+                        'Automatica': 'Automatic',
+                        'Convencional': 'Conventional'
+                    })
+                    
+                else:
+                    LOGGER.error(f"Failed to fetch stations. Status: {response.status_code}")
+                    return pd.DataFrame()
+            except Exception as e:
+                LOGGER.error(f"Error fetching stations: {e}")
+                return pd.DataFrame()
+
             # Extract IBGE code from CD_WSI
             # Format: 0-76-0-{IBGE_CODE}00000...
             def extract_ibge(wsi):
@@ -39,7 +77,10 @@ class INMETDownloader:
                         return code_part[:7]
                 return None
             
-            self._stations_cache['IBGE_CODE'] = self._stations_cache['CD_WSI'].apply(extract_ibge)
+            if 'CD_WSI' in self._stations_cache.columns:
+                self._stations_cache['IBGE_CODE'] = self._stations_cache['CD_WSI'].apply(extract_ibge)
+            else:
+                self._stations_cache['IBGE_CODE'] = None
             
         return self._stations_cache
 
@@ -82,33 +123,46 @@ class INMETDownloader:
             LOGGER.warning("No INMET stations found.")
             return pd.DataFrame()
             
-        df = None
+        df = pd.DataFrame()
         for station in stations:
             station_id = station['CD_STATION']
             station_name = station['STATION_NAME']
             LOGGER.info(f"Trying station: {station_name} ({station_id})")
 
-            # Download data using inmetpy
             try:
-                df_temp = self.inmet.get_data_station(
-                    start_date.strftime('%Y-%m-%d'),
-                    end_date.strftime('%Y-%m-%d'),
-                    'hour',
-                    [station_id]
-                )
+                # Iterate over years
+                years = range(start_date.year, end_date.year + 1)
+                df_station = pd.DataFrame()
                 
-                if df_temp is not None and not df_temp.empty:
-                    df = df_temp
-                    LOGGER.info(f"Successfully downloaded data from {station_name} ({station_id})")
-                    break
+                for year in years:
+                    LOGGER.info(f"Processing year {year} for station {station_id}...")
+                    df_year = self._get_data_from_zip(year, station_id)
+                    if not df_year.empty:
+                        df_station = pd.concat([df_station, df_year])
+                
+                if not df_station.empty:
+                    # Standardize columns first to ensure DT_MEDICAO exists
+                    df_station = self._standardize_columns(df_station)
+                    
+                    # Filter by date range
+                    # df_station['DT_MEDICAO'] is already datetime from _standardize_columns
+                    mask = (df_station['DT_MEDICAO'].dt.date >= start_date) & (df_station['DT_MEDICAO'].dt.date <= end_date)
+                    df = df_station.loc[mask]
+                    
+                    if not df.empty:
+                        LOGGER.info(f"Successfully retrieved data from {station_name} ({station_id})")
+                        break
+                    else:
+                        LOGGER.warning(f"Data found for {station_id} but outside requested range.")
                 else:
-                    LOGGER.warning(f"No data returned for station {station_id}. Trying next...")
+                    LOGGER.warning(f"No data found in ZIPs for station {station_id}.")
+
             except Exception as e:
-                LOGGER.error(f"Error downloading data from {station_id}: {e}")
+                LOGGER.error(f"Error processing data for {station_id}: {e}")
                 continue
 
-        if df is None or df.empty:
-            LOGGER.warning(f"No data returned for any of the nearest stations.")
+        if df.empty:
+            LOGGER.warning(f"No data returned for any of the stations.")
             return pd.DataFrame()
 
         # Process and aggregate
@@ -117,13 +171,10 @@ class INMETDownloader:
         if ibge_code:
             daily_df.insert(0, 'codigo_ibge', ibge_code)
         else:
-            # Try to get IBGE code from shapefile if not provided
-            # (Already tried above, but just in case)
             inferred_ibge = self._get_ibge_code(shapefile_path)
             if inferred_ibge:
                 daily_df.insert(0, 'codigo_ibge', inferred_ibge)
             else:
-                # Fallback to lat/lon if no IBGE code
                 lat, lon = self._centroid_from_shapefile(shapefile_path)
                 daily_df['lat'] = lat
                 daily_df['lon'] = lon
@@ -134,6 +185,66 @@ class INMETDownloader:
         LOGGER.info(f"CSV generated -> {out_csv}")
         
         return daily_df
+
+    def _get_data_from_zip(self, year: int, station_code: str) -> pd.DataFrame:
+        zip_filename = f"{year}.zip"
+        zip_path = os.path.join(self.CACHE_DIR, zip_filename)
+        url = f"https://portal.inmet.gov.br/uploads/dadoshistoricos/{year}.zip"
+
+        # Download if not exists
+        if not os.path.exists(zip_path):
+            LOGGER.info(f"Downloading historical data for {year}...")
+            try:
+                response = requests.get(url, stream=True)
+                if response.status_code == 200:
+                    with open(zip_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                else:
+                    LOGGER.error(f"Failed to download {url}. Status: {response.status_code}")
+                    return pd.DataFrame()
+            except Exception as e:
+                LOGGER.error(f"Download error: {e}")
+                return pd.DataFrame()
+
+        # Extract specific station file
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                # Find file matching station code
+                # Pattern: INMET_SE_SP_A771_...
+                # We look for `_{station_code}_` in the filename
+                target_file = None
+                for filename in z.namelist():
+                    if f"_{station_code}_" in filename:
+                        target_file = filename
+                        break
+                
+                if target_file:
+                    LOGGER.info(f"Found file {target_file} in {zip_filename}")
+                    with z.open(target_file) as f:
+                        # Read CSV. INMET CSVs usually have header at line 9 (skip 8 rows)
+                        # Separator is ';' and decimal is ','
+                        # Encoding is usually latin1 or utf-8 (try latin1 first for legacy)
+                        return pd.read_csv(
+                            f, 
+                            sep=';', 
+                            decimal=',', 
+                            skiprows=8, 
+                            encoding='latin1',
+                            on_bad_lines='skip'
+                        )
+                else:
+                    LOGGER.warning(f"Station {station_code} not found in {year}.zip")
+                    return pd.DataFrame()
+        except zipfile.BadZipFile:
+            LOGGER.error(f"Bad ZIP file: {zip_path}")
+            # Optionally remove bad zip
+            # os.remove(zip_path)
+            return pd.DataFrame()
+        except Exception as e:
+            LOGGER.error(f"Error reading ZIP {zip_path}: {e}")
+            return pd.DataFrame()
+
 
     def _find_station_by_ibge(self, ibge_code: int) -> Optional[dict]:
         stations = self._get_stations()
@@ -193,21 +304,41 @@ class INMETDownloader:
         nearest = stations.sort_values('dist').head(n)
         return nearest.to_dict('records')
 
-    def _process_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Columns mapping and aggregation
-        # INMET columns (hourly):
-        # DT_MEDICAO, HR_MEDICAO, TEM_INS, TEM_MAX, TEM_MIN, UMD_INS, UMD_MAX, UMD_MIN, 
-        # PTO_INS, PTO_MAX, PTO_MIN, PRE_INS, PRE_MAX, PRE_MIN, RAD_GLO, CHUVA, VEN_DIR, VEN_VEL, VEN_RAJ
+    def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        column_mapping = {
+            'Data': 'DT_MEDICAO',
+            'DATA (YYYY-MM-DD)': 'DT_MEDICAO',
+            'RADIACAO GLOBAL (Kj/m²)': 'RAD_GLO',
+            'PRECIPITAÇÃO TOTAL, HORÁRIO (mm)': 'CHUVA',
+            'TEMPERATURA MÁXIMA NA HORA ANT. (AUT) (°C)': 'TEM_MAX',
+            'TEMPERATURA MÍNIMA NA HORA ANT. (AUT) (°C)': 'TEM_MIN',
+            'TEMPERATURA DO AR - BULBO SECO, HORARIA (°C)': 'TEM_INS',
+            'UMIDADE REL. MIN. NA HORA ANT. (AUT) (%)': 'UMD_MIN',
+            'UMIDADE RELATIVA DO AR, HORARIA (%)': 'UMD_INS',
+            'VENTO, VELOCIDADE HORARIA (m/s)': 'VEN_VEL'
+        }
+        
+        # Rename columns if they exist
+        df = df.rename(columns=column_mapping)
         
         # Convert date and time
-        df['DT_MEDICAO'] = pd.to_datetime(df['DT_MEDICAO'])
+        if 'DT_MEDICAO' in df.columns:
+            # Historical data 'Data' is usually YYYY/MM/DD or DD/MM/YYYY
+            df['DT_MEDICAO'] = df['DT_MEDICAO'].astype(str).str.replace('/', '-')
+            df['DT_MEDICAO'] = pd.to_datetime(df['DT_MEDICAO'], errors='coerce')
         
         # Ensure numeric
         cols_to_numeric = ['RAD_GLO', 'CHUVA', 'TEM_MAX', 'TEM_MIN', 'TEM_INS', 'UMD_MIN', 'UMD_INS', 'VEN_VEL']
         for col in cols_to_numeric:
             if col in df.columns:
+                # Replace comma with dot if it's a string
+                if df[col].dtype == object:
+                    df[col] = df[col].astype(str).str.replace(',', '.')
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
+        return df
+
+    def _process_data(self, df: pd.DataFrame) -> pd.DataFrame:
         # Group by date
         agg_funcs = {}
         
@@ -236,6 +367,10 @@ class INMETDownloader:
         # wind (VEN_VEL)
         if 'VEN_VEL' in df.columns:
             agg_funcs['VEN_VEL'] = ['mean']
+
+        if 'DT_MEDICAO' not in df.columns:
+            LOGGER.error("DT_MEDICAO column missing after processing. Columns found: %s", df.columns)
+            return pd.DataFrame()
 
         daily = df.groupby('DT_MEDICAO').agg(agg_funcs)
         
@@ -324,7 +459,7 @@ if __name__ == '__main__':
     downloader = INMETDownloader()
     
     # Example usage for Diadema
-    shapefile = 'data/shapefiles/SP-Diadema/SP_Diadema.shp'
+    shapefile = 'data/shapefiles/SP-São_Paulo/SP_São_Paulo.shp'
     
     # Check if shapefile exists before running
     if os.path.exists(shapefile):
@@ -333,7 +468,7 @@ if __name__ == '__main__':
                 shapefile_path=shapefile,
                 start='2024-01-01',
                 end='2024-06-01', # 10 days example
-                out_csv='data/output/inmet/diadema_inmet_2024.csv'
+                out_csv='data/output/inmet/São_Paulo_inmet_2024.csv'
             )
             print("\n--- Download and processing successful ---")
             print(df_result.head())
