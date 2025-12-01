@@ -153,7 +153,10 @@ def baixar_merra(
             raise AttributeError('The attribute name has changed again!')
         # find a match between "." and ".nc4" that does not have "." .
         exp = r'(?<=\.)[^\.]*(?=\.nc4)'
-        res = re.search(exp, f_name).group(0)
+        match = re.search(exp, f_name)
+        if match is None:
+            raise ValueError(f'Unable to extract date from filename metadata: {f_name}')
+        res = match.group(0)
         # Extract the date. 
         y, m, d = res[0:4], res[4:6], res[6:8]
         date_str = ('%s-%s-%s' % (y, m, d))
@@ -167,13 +170,29 @@ def baixar_merra(
     for loc, lat, lon in locs:
         print('Cleaning and merging ' + field_name + ' data for ' + loc)
         dfs = []
-        for file in os.listdir(field_name + '/' + loc):
+        failed_files = []
+        folder_path = os.path.join(field_name, loc)
+        for file in sorted(os.listdir(folder_path)):
             if '.nc4' in file:
+                file_path = os.path.join(folder_path, file)
                 try:
-                    with xr.open_mfdataset(field_name + '/' + loc + '/' + file, preprocess=extract_date) as df:
-                        dfs.append(df.to_dataframe())
-                except:
-                    print('Issue with file ' + file)
+                    with xr.open_dataset(file_path) as ds:
+                        ds = extract_date(ds)
+                        dfs.append(ds.to_dataframe())
+                except Exception as exc:
+                    failed_files.append((file, str(exc)))
+                    print(f'Issue with file {file}: {exc}')
+
+        if not dfs:
+            sample_errors = '; '.join(
+                f"{name}: {err}" for name, err in failed_files[:5]
+            ) or 'no error details captured'
+            raise RuntimeError(
+                'No valid NetCDF files could be processed for '
+                f"{field_name}/{loc}. Total failures: {len(failed_files)}. "
+                f'Sample errors: {sample_errors}'
+            )
+
         df_hourly = pd.concat(dfs)
         df_hourly['time'] = df_hourly.index.get_level_values(level=2)
         df_hourly.columns = [field_name, 'date', 'time']
