@@ -45,8 +45,8 @@ class MerraVariable:
 class MERRA2Downloader:
     """Wrapper around the merradownload package to fetch pollutant metrics."""
 
-    CACHE_ROOT = Path("data/cache/merra2")
-    OUTPUT_ROOT = Path("data/output/merra2")
+    CACHE_ROOT = PROJECT_ROOT / "data/cache/merra2"
+    OUTPUT_ROOT = PROJECT_ROOT / "data/output/merra2"
 
     VARIABLES: Dict[str, MerraVariable] = {
         "organiccarbonbiofuelemissions": MerraVariable("OCEMBF", "M2T1NXADG", "tavg1_2d_adg_Nx"),
@@ -94,11 +94,23 @@ class MERRA2Downloader:
         shapefile_path: str,
         start: str,
         end: str,
-        out_csv: str = "data/output/merra2/merra2_daily.csv",
+        out_csv: Optional[str] = None,
         variables: Optional[Iterable[str]] = None,
         force_download: bool = False,
-    cleanup: bool = True,
+        cleanup: bool = True,
     ) -> pd.DataFrame:
+        if out_csv is None:
+            out_csv = self.OUTPUT_ROOT / "merra2_daily.csv"
+        
+        # Ensure out_csv is absolute or relative to PROJECT_ROOT if it looks like a data path
+        out_csv_path = Path(out_csv)
+        if not out_csv_path.is_absolute():
+            # If it starts with 'data/', assume relative to PROJECT_ROOT
+            if str(out_csv_path).startswith("data"):
+                out_csv_path = PROJECT_ROOT / out_csv_path
+            else:
+                out_csv_path = Path.cwd() / out_csv_path
+
         start_date = self._parse_date(start)
         end_date = self._parse_date(end)
         if end_date < start_date:
@@ -153,14 +165,15 @@ class MERRA2Downloader:
         combined.insert(0, "shapefile_nome", Path(shapefile_path).stem)
         combined.insert(0, "codigo_ibge", ibge_code if ibge_code is not None else None)
 
-        output_path = Path(out_csv)
+        output_path = out_csv_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         combined.to_csv(output_path, index=False)
         LOGGER.info("CSV final gerado -> %s", output_path)
 
+        # Optional: save a copy to default location if different
         default_final_csv = self.OUTPUT_ROOT / f"{Path(shapefile_path).stem}_final.csv"
-        default_final_csv.parent.mkdir(parents=True, exist_ok=True)
         if default_final_csv.resolve() != output_path.resolve():
+            default_final_csv.parent.mkdir(parents=True, exist_ok=True)
             combined.to_csv(default_final_csv, index=False)
             LOGGER.info("Cópia adicional salva em -> %s", default_final_csv)
 
@@ -331,7 +344,7 @@ if __name__ == "__main__":
             df_result = downloader.fetch_daily_data(
                 shapefile_path=shapefile,
                 start="2024-01-01",
-                end="2024-01-05",
+                end="2024-02-01",
                 out_csv="data/output/merra2/sp_sao_paulo_merra2.csv",
             )
             print(df_result.head())

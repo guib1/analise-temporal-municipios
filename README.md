@@ -59,6 +59,17 @@ O downloader `MERRA2.py` utiliza o pacote local `merradownload` e requer credenc
 
 5. **Segurança**: Nunca compartilhe seu `.env`; armazene as credenciais apenas localmente.
 
+### Credenciais TROPOMI (Copernicus Data Scape Ecosystem)
+
+1. Para conseguir baixar os dados do Tropobi de objetos sólidos é necessário criar uma conta no CDSE:
+[Link](https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/auth?client_id=account-console&redirect_uri=https%3A%2F%2Fidentity.dataspace.copernicus.eu%2Fauth%2Frealms%2FCDSE%2Faccount%2F%23%2Fpersonal-info&state=3eb699d9-3654-447a-8795-80f5932ad895&response_mode=fragment&response_type=code&scope=openid&nonce=76768815-5d04-40ea-8251-4b24dfc8fef9&code_challenge=PmJHoHnfwYpVrzZJ4-iUM1JbOCO9xmNwMGkwUbDozio&code_challenge_method=S256)
+
+2. Com a conta criada salve no .env as variáveis: 
+- COPERNICUS_USER
+- COPERNICUS_PASSWORD
+
+3. É NECESSÁRIO CONFIRMAR O EMAIL APÓS CRIAR A CONTA PARA O FUNCIONAMENTO DA API
+
 ### Execução
 
 Com o `.env` configurado, execute os notebooks ou scripts em `src/` normalmente. Todos os carregamentos de credenciais são automáticos, dispensando parâmetros extras na linha de comando.
