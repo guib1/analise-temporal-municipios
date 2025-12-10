@@ -51,6 +51,12 @@ class TropomiDownloader:
             "variable": "nitrogendioxide_tropospheric_column",
             "qa_threshold": 0.75,
             "unit_convert": True
+        },
+        "no2omi": {
+            "product_type": "L2__NO2___",
+            "variable": "nitrogendioxide_tropospheric_column",
+            "qa_threshold": 0.75,
+            "unit_convert": True
         }
     }
 
@@ -222,7 +228,10 @@ class TropomiDownloader:
             parts = col.split('_')
             if len(parts) == 2:
                 pol, stat = parts
-                rename_map[col] = f"{pol}tropomi_{stat}"
+                if pol.endswith('omi'):
+                    rename_map[col] = col
+                else:
+                    rename_map[col] = f"{pol}tropomi_{stat}"
         
         df_daily = df_daily.rename(columns=rename_map)
         
@@ -317,7 +326,7 @@ class TropomiDownloader:
             }
 
         except Exception as e:
-            LOGGER.error(f"Erro ao processar {nc_path}: {e}")''
+            LOGGER.error(f"Erro ao processar {nc_path}: {e}")
             return None
 
 if __name__ == "__main__":

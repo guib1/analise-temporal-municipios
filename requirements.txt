@@ -92,3 +92,4 @@ widgetsnbextension==4.0.14
 xarray==2025.9.0
 xlrd==2.0.2
 yaspin==2.2.0
+scipy

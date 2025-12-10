@@ -61,6 +61,8 @@ class MERRA2Downloader:
         "blackcarbonantrogonenico": MerraVariable("BCEMAN", "M2T1NXADG", "tavg1_2d_adg_Nx"),
         "comerra2": MerraVariable("COEM", "M2T1NXCHM", "tavg1_2d_chm_Nx"),
         "o3merra2": MerraVariable("TO3", "M2T1NXSLV", "tavg1_2d_slv_Nx"),
+        "o3omi": MerraVariable("TO3", "M2T1NXSLV", "tavg1_2d_slv_Nx"),
+        "aodterramodis": MerraVariable("TOTEXTTAU", "M2T1NXAER", "tavg1_2d_aer_Nx"),
     }
 
     def __init__(
@@ -69,15 +71,9 @@ class MERRA2Downloader:
         password: Optional[str] = None,
         cache_dir: Optional[str | Path] = None,
     ) -> None:
-        self.username = (
-            username
-            or os.getenv("MERRA_USERNAME")
-            or os.getenv("EARTHDATA_USERNAME")
+        self.username = (os.getenv("NASA_USER")
         )
-        self.password = (
-            password
-            or os.getenv("MERRA_PASSWORD")
-            or os.getenv("EARTHDATA_PASSWORD")
+        self.password = (os.getenv("NASA_PASSWORD")
         )
         self.cache_dir = Path(cache_dir) if cache_dir else self.CACHE_ROOT
         self.cache_dir.mkdir(parents=True, exist_ok=True)

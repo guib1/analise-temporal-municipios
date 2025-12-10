@@ -147,7 +147,7 @@ class INMETDownloader:
                     # Filter by date range
                     # df_station['DT_MEDICAO'] is already datetime from _standardize_columns
                     mask = (df_station['DT_MEDICAO'].dt.date >= start_date) & (df_station['DT_MEDICAO'].dt.date <= end_date)
-                    df = df_station.loc[mask]
+                    df = df_station.loc[mask].copy()
                     
                     if not df.empty:
                         LOGGER.info(f"Successfully retrieved data from {station_name} ({station_id})")
@@ -338,7 +338,40 @@ class INMETDownloader:
         
         return df
 
+    def _calculate_heat_index(self, df: pd.DataFrame) -> pd.DataFrame:
+        if 'TEM_INS' not in df.columns or 'UMD_INS' not in df.columns:
+            return df
+            
+        T_c = df['TEM_INS']
+        RH = df['UMD_INS']
+        
+        # Convert to Fahrenheit
+        T_f = T_c * 1.8 + 32
+        
+        # Formula provided by user
+        HI_f = (-42.379 + 
+                (2.04901523 * T_f) + 
+                (10.14333127 * RH) - 
+                (0.22475541 * T_f * RH) - 
+                (0.00683783 * T_f**2) - 
+                (0.05481717 * RH**2) + 
+                (0.00122874 * T_f**2 * RH) + 
+                (0.00085282 * T_f * RH**2) - 
+                (0.00000199 * T_f**2 * RH**2))
+        
+        # Use T_f if T_f < 80 (Standard Heat Index definition)
+        HI_f = np.where(T_f < 80, T_f, HI_f)
+        
+        # Convert back to Celsius
+        HI_c = (HI_f - 32) / 1.8
+        
+        df['HEAT_INDEX'] = HI_c
+        return df
+
     def _process_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Calculate Heat Index
+        df = self._calculate_heat_index(df)
+
         # Group by date
         agg_funcs = {}
         
@@ -358,7 +391,9 @@ class INMETDownloader:
         if 'TEM_INS' in df.columns:
             agg_funcs['TEM_INS'] = ['mean']
             
-        # humidity (UMD_MIN, UMD_INS)
+        # humidity (UMD_MAX, UMD_MIN, UMD_INS)
+        if 'UMD_MAX' in df.columns:
+            agg_funcs['UMD_MAX'] = ['max']
         if 'UMD_MIN' in df.columns:
             agg_funcs['UMD_MIN'] = ['min']
         if 'UMD_INS' in df.columns:
@@ -367,6 +402,10 @@ class INMETDownloader:
         # wind (VEN_VEL)
         if 'VEN_VEL' in df.columns:
             agg_funcs['VEN_VEL'] = ['mean']
+
+        # heat index
+        if 'HEAT_INDEX' in df.columns:
+            agg_funcs['HEAT_INDEX'] = ['max', 'min', 'mean']
 
         if 'DT_MEDICAO' not in df.columns:
             LOGGER.error("DT_MEDICAO column missing after processing. Columns found: %s", df.columns)
@@ -388,9 +427,13 @@ class INMETDownloader:
             'TEM_MAX_max': 'temperature_max',
             'TEM_MIN_min': 'temperature_min',
             'TEM_INS_mean': 'temperature_med',
+            'UMD_MAX_max': 'humidity_max',
             'UMD_MIN_min': 'humidity_min',
             'UMD_INS_mean': 'humidity_mea',
-            'VEN_VEL_mean': 'wind_mea'
+            'VEN_VEL_mean': 'wind_mea',
+            'HEAT_INDEX_max': 'heatindex_max',
+            'HEAT_INDEX_min': 'heatindex_min',
+            'HEAT_INDEX_mean': 'heatindex_mea'
         }
         
         daily.rename(columns=rename_map, inplace=True)
@@ -400,8 +443,9 @@ class INMETDownloader:
             'globalradiation_max', 'globalradiation_min', 'globalradiation_mea',
             'precipitation_sum',
             'temperature_max', 'temperature_min', 'temperature_med',
-            'humidity_min', 'humidity_mea',
-            'wind_mea'
+            'humidity_max', 'humidity_min', 'humidity_mea',
+            'wind_mea',
+            'heatindex_max', 'heatindex_min', 'heatindex_mea'
         ]
         
         for col in requested_cols:
