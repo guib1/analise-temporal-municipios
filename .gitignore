@@ -2,3 +2,5 @@
 .vscode
 /Dados Alexandre
 /__pycache__/
+.env
+.gitignore

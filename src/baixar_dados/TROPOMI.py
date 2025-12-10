@@ -317,7 +317,7 @@ class TropomiDownloader:
             }
 
         except Exception as e:
-            LOGGER.error(f"Erro ao processar {nc_path}: {e}")
+            LOGGER.error(f"Erro ao processar {nc_path}: {e}")''
             return None
 
 if __name__ == "__main__":
