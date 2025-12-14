@@ -29,14 +29,12 @@ class ERA5Downloader:
     Downloads ERA5 data for a given shapefile and processes it into a daily CSV.
     """
 
-    def __init__(self, url: Optional[str] = None, key: Optional[str] = None):
+    def __init__(self):
         """
-        Initializes the downloader with optional CDS API credentials.
-        If url and key are not provided, it tries to load from environment variables
-        CDSAPI_URL and CDSAPI_KEY. If those are also missing, cdsapi will look for the ~/.cdsapirc file.
+        Initializes the downloader using credentials from environment variables.
         """
-        self.cds_url = url or os.getenv("CDSAPI_URL")
-        self.cds_key = key or os.getenv("CDSAPI_KEY")
+        self.cds_url = os.getenv("CDSAPI_URL")
+        self.cds_key = os.getenv("CDSAPI_KEY")
 
     def fetch_daily_data(
         self,
@@ -124,6 +122,10 @@ class ERA5Downloader:
             ds_merged.close()
 
         except Exception as e:
+            msg = str(e)
+            if "dependencies may not be installed" in msg or "netcdf4" in msg.lower():
+                LOGGER.error("It seems you are missing the required libraries to read NetCDF files.")
+                LOGGER.error("Please install them by running: pip install netcdf4 h5netcdf")
             LOGGER.error(f"Processing error: {e}")
             raise
         finally:
@@ -149,12 +151,16 @@ class ERA5Downloader:
         days: List[str],
         variables: List[str],
     ):
+        if not self.cds_url or not self.cds_key:
+            LOGGER.error("CDSAPI_URL and/or CDSAPI_KEY not found in environment variables.")
+            LOGGER.error("Please ensure you have a .env file with these variables defined.")
+            raise ValueError("Missing CDS API credentials in .env file.")
+
         try:
             c = cdsapi.Client(url=self.cds_url, key=self.cds_key)
         except Exception as e:
             LOGGER.error("Error initializing CDS API client: %s", e)
-            LOGGER.error("Ensure ~/.cdsapirc file is configured or pass URL and key.")
-            LOGGER.error("Instructions: https://cds.climate.copernicus.eu/api-how-to")
+            LOGGER.error("Ensure CDSAPI_URL and CDSAPI_KEY are correctly set in your .env file.")
             raise
 
         req = {

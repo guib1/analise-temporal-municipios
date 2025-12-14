@@ -82,7 +82,7 @@ class MERRA2Downloader:
             netrc_path = Path.home() / ".netrc"
             if not netrc_path.exists():  # pragma: no cover - requires local credentials
                 raise RuntimeError(
-                    "Earthdata credentials not found. Set MERRA_USERNAME/MERRA_PASSWORD (or EARTHDATA_*), or configure ~/.netrc."
+                    "Earthdata credentials not found. Please ensure 'NASA_USER' and 'NASA_PASSWORD' are set in your .env file."
                 )
 
     def fetch_daily_data(
@@ -140,17 +140,18 @@ class MERRA2Downloader:
                 force_download=force_download,
             )
 
-            if df_var.empty:
+            if not df_var.empty:
+                frames.append(df_var)
+            else:
                 LOGGER.warning("No data returned for %s", var_name)
-                continue
-
-            frames.append(df_var)
 
             if cleanup:
                 self._cleanup_variable_cache(var_name)
 
         if len(frames) == 1:
             LOGGER.warning("No MERRA-2 data was gathered for the requested range.")
+            if cleanup:
+                self._clear_cache_root()
             return pd.DataFrame()
 
         combined = frames[0]
