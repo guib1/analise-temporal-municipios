@@ -109,7 +109,7 @@ class TropomiDownloader:
         shapefile_path: str,
         start_date: str,
         end_date: str,
-        output_csv: str = "data/raw/tropomi_data.csv",
+        output_csv: str = "data/output/tropomi/tropomi_data.csv",
         cache_dir: str = "data/cache/tropomi"
     ) -> pd.DataFrame:
         """
@@ -337,7 +337,7 @@ if __name__ == "__main__":
     pwd = os.getenv("COPERNICUS_PASSWORD")
     
     if not user:
-        print("Defina COPERNICUS_USER e COPERNICUS_PASSWORD")
+        print("Defina COPERNICUS_USER e COPERNICUS_PASSWORD em .env")
     else:
         downloader = TropomiDownloader(user, pwd)
         # Exemplo fictício

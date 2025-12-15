@@ -19,10 +19,17 @@ Os scripts de download utilizam variáveis de ambiente centralizadas em um arqui
 ### Passo a passo para criar o `.env`
 
 1. Crie um arquivo chamado `.env` na raiz do repositório.
-2. Defina as chaves necessárias seguindo os exemplos abaixo.
-3. Salve o arquivo; ele **não** deve ser versionado (adicione ao `.gitignore` se ainda não estiver).
+2. Defina as chaves necessárias seguindo os exemplos abaixo:
+    CETESB_USER=
+    CETESB_PASSWORD=
+    CDSAPI_URL=
+    CDSAPI_KEY=
+    NASA_USER=
+    NASA_PASSWORD=
+    COPERNICUS_USER=
+    COPERNICUS_PASSWORD=
 
-> Os scripts também aceitam credenciais configuradas nos arquivos padrão dos serviços (por exemplo, `~/.cdsapirc` ou `~/.netrc`). Mesmo assim, manter tudo no `.env` facilita a reprodução em diferentes máquinas.
+> Alguns scripts também aceitam credenciais configuradas nos arquivos padrão dos serviços (por exemplo, `~/.cdsapirc` ou `~/.netrc`). Mas esta desativado por padrão para manter o padrão de todas as credenciais em .env
 
 ### Credenciais ERA5 (CDS API)
 

@@ -16,12 +16,7 @@ load_dotenv()
 
 LOGGER = logging.getLogger(__name__)
 
-class CETESBDownloader:
-    """
-    Baixa dados de qualidade do ar do sistema QUALAR (CETESB-SP).
-    Requer credenciais no .env (CETESB_USER, CETESB_PASSWORD).
-    """
-    
+class CETESBDownloader:    
     LOGIN_URL = "https://qualar.cetesb.sp.gov.br/qualar/autenticador"
     EXPORT_URL = "https://qualar.cetesb.sp.gov.br/qualar/exportaDados.do"
     HOME_URL = "https://qualar.cetesb.sp.gov.br/qualar/home.do"
