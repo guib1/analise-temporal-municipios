@@ -6,6 +6,7 @@ import requests
 from datetime import datetime
 import scipy.stats as stats
 from INMET import INMETDownloader
+from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -199,8 +200,10 @@ class DiversosDownloader:
         LOGGER.info("Iniciando processamento de dados diversos...")
         
         # 1. Obter dados base do INMET (Temp, Hum, Precip)
-        # Usamos um arquivo temporário para o output do INMET
-        temp_inmet_csv = "data/cache/temp_inmet_diversos.csv"
+        # Usamos um arquivo temporário para o output do INMET.
+        # Precisa ser único para permitir execução multi-município sem sobrescrever.
+        shp_stem = Path(str(shapefile_path)).stem
+        temp_inmet_csv = f"data/cache/temp_inmet_diversos_{shp_stem}.csv"
         try:
             # INMETDownloader usa fetch_daily_data
             df_inmet = self.inmet_downloader.fetch_daily_data(shapefile_path, start_date, end_date, out_csv=temp_inmet_csv)

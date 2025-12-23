@@ -294,9 +294,15 @@ class ERA5Downloader:
             if 'valid_time' in ds.coords and 'time' not in ds.coords:
                 ds = ds.rename({'valid_time': 'time'})
 
-        ds['rnet_Wm2'] = (ds['surface_net_solar_radiation'] + ds['surface_net_thermal_radiation']) / 3600.0
-        ds['rterm_Wm2'] = ds['surface_net_thermal_radiation'] / 3600.0
-        ds = ds[['rnet_Wm2', 'rterm_Wm2', 'boundary_layer_height']]
+        # NOTE:
+        # ERA5 radiation variables are accumulated energy (J/m²) over the time step.
+        # The project reference dataset (data/raw_input_reference/*) uses these values
+        # directly (i.e., NOT converted to W/m² by dividing by 3600).
+        # In the project reference dataset, `rnet_*` corresponds to SSR (solar) and
+        # `rterm_*` corresponds to STR (thermal). Keep them separate.
+        ds['rnet'] = ds['surface_net_solar_radiation']
+        ds['rterm'] = ds['surface_net_thermal_radiation']
+        ds = ds[['rnet', 'rterm', 'boundary_layer_height']]
 
         if coords and not use_bbox:
             # Single point analysis (centroid)
@@ -314,20 +320,21 @@ class ERA5Downloader:
         frames = []
         for lat, lon in coords:
             sel = ds.sel(latitude=lat, longitude=lon, method='nearest')
+            # Daily aggregates (one row per day)
             dmax = sel.resample(time='1D').max()
             dmin = sel.resample(time='1D').min()
             dmean = sel.resample(time='1D').mean()
             df = pd.DataFrame({
                 'date': pd.to_datetime(dmean['time'].values),
-                'rnet_max': dmax['rnet_Wm2'].values,
-                'rnet_min': dmin['rnet_Wm2'].values,
-                'rnet_mean': dmean['rnet_Wm2'].values,
-                'rterm_max': dmax['rterm_Wm2'].values,
-                'rterm_min': dmin['rterm_Wm2'].values,
-                'rterm_mean': dmean['rterm_Wm2'].values,
+                'rnet_max': dmax['rnet'].values,
+                'rnet_min': dmin['rnet'].values,
+                'rnet_mea': dmean['rnet'].values,
+                'rterm_max': dmax['rterm'].values,
+                'rterm_min': dmin['rterm'].values,
+                'rterm_mea': dmean['rterm'].values,
                 'pblhera5_max': dmax['boundary_layer_height'].values,
                 'pblhera5_min': dmin['boundary_layer_height'].values,
-                'pblhera5_mean': dmean['boundary_layer_height'].values,
+                'pblhera5_mea': dmean['boundary_layer_height'].values,
             })
             if ibge_code:
                 df['codigo_ibge'] = ibge_code
@@ -337,7 +344,7 @@ class ERA5Downloader:
             frames.append(df)
         final = pd.concat(frames, ignore_index=True)
         
-        cols = ['date', 'rnet_max', 'rnet_min', 'rnet_mean', 'rterm_max', 'rterm_min', 'rterm_mean', 'pblhera5_max', 'pblhera5_min', 'pblhera5_mean']
+        cols = ['date', 'rnet_max', 'rnet_min', 'rnet_mea', 'rterm_max', 'rterm_min', 'rterm_mea', 'pblhera5_max', 'pblhera5_min', 'pblhera5_mea']
         if ibge_code:
             cols.insert(0, 'codigo_ibge')
         else:
@@ -356,19 +363,19 @@ class ERA5Downloader:
             vmin = dmin.isel(time=t_idx)
             vmean = dmean.isel(time=t_idx)
             
-            stacked = vmean['rnet_Wm2'].stack(allpoints=('latitude', 'longitude'))
+            stacked = vmean['rnet'].stack(allpoints=('latitude', 'longitude'))
             
             data = {
                 'date': pd.to_datetime(t),
-                'rnet_max': vmax['rnet_Wm2'].stack(allpoints=('latitude','longitude')).values,
-                'rnet_min': vmin['rnet_Wm2'].stack(allpoints=('latitude','longitude')).values,
-                'rnet_mean': stacked.values,
-                'rterm_max': vmax['rterm_Wm2'].stack(allpoints=('latitude','longitude')).values,
-                'rterm_min': vmin['rterm_Wm2'].stack(allpoints=('latitude','longitude')).values,
-                'rterm_mean': vmean['rterm_Wm2'].stack(allpoints=('latitude','longitude')).values,
+                'rnet_max': vmax['rnet'].stack(allpoints=('latitude','longitude')).values,
+                'rnet_min': vmin['rnet'].stack(allpoints=('latitude','longitude')).values,
+                'rnet_mea': stacked.values,
+                'rterm_max': vmax['rterm'].stack(allpoints=('latitude','longitude')).values,
+                'rterm_min': vmin['rterm'].stack(allpoints=('latitude','longitude')).values,
+                'rterm_mea': vmean['rterm'].stack(allpoints=('latitude','longitude')).values,
                 'pblhera5_max': vmax['boundary_layer_height'].stack(allpoints=('latitude','longitude')).values,
                 'pblhera5_min': vmin['boundary_layer_height'].stack(allpoints=('latitude','longitude')).values,
-                'pblhera5_mean': vmean['boundary_layer_height'].stack(allpoints=('latitude','longitude')).values,
+                'pblhera5_mea': vmean['boundary_layer_height'].stack(allpoints=('latitude','longitude')).values,
             }
             
             if ibge_code:
@@ -442,11 +449,11 @@ if __name__ == '__main__':
     downloader = ERA5Downloader()
     try:
         df_result = downloader.fetch_daily_data(
-            shapefile_path='data/shapefiles/SP-Diadema/SP_Diadema.shp',
-            start='2024-01-01',
-            end='2024-01-02',
-            out_nc='data/output/era5/diadema_era5.nc',
-            out_csv='data/output/era5/daily_diadema_2024.csv',
+            shapefile_path='data/shapefiles/SP-São_Paulo/SP_São_Paulo.shp',
+            start='2000-01-01',
+            end='2000-02-01',
+            out_nc='data/output/era5/sao_paulo_era5.nc',
+            out_csv='data/output/era5/daily_sao_paulo_2000.csv',
             use_bbox=False, # Use centroid by default
         )
         print("\n--- Download and processing successful ---")

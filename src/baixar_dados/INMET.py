@@ -4,6 +4,7 @@ import logging
 import zipfile
 import requests
 import io
+import re
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Tuple
 import pandas as pd
@@ -107,10 +108,10 @@ class INMETDownloader:
         # 1. Try to find station by IBGE code
         if ibge_code:
             LOGGER.info(f"Searching for station with IBGE code: {ibge_code}")
-            station_by_ibge = self._find_station_by_ibge(ibge_code)
-            if station_by_ibge:
-                LOGGER.info(f"Found station by IBGE code: {station_by_ibge['STATION_NAME']} ({station_by_ibge['CD_STATION']})")
-                stations.append(station_by_ibge)
+            stations_by_ibge = self._find_stations_by_ibge(ibge_code)
+            for st in stations_by_ibge:
+                LOGGER.info(f"Found station by IBGE code: {st['STATION_NAME']} ({st['CD_STATION']})")
+            stations.extend(stations_by_ibge)
         
         # 2. If no station found by IBGE, fallback to nearest stations
         if not stations:
@@ -118,6 +119,29 @@ class INMETDownloader:
             # Get centroid
             lat, lon = self._centroid_from_shapefile(shapefile_path)
             stations = self._find_nearest_stations(lat, lon, n=5)
+
+        # 3. If we found stations by IBGE, still add nearest as fallback candidates
+        if stations:
+            try:
+                lat, lon = self._centroid_from_shapefile(shapefile_path)
+                stations.extend(self._find_nearest_stations(lat, lon, n=10))
+            except Exception:
+                pass
+
+        stations = self._dedupe_stations(stations)
+
+        # Filter stations by operational period when available
+        stations = [
+            st for st in stations
+            if self._station_operates_in_range(st, start_date, end_date)
+        ]
+
+        if not stations:
+            LOGGER.warning(
+                "No candidate INMET stations appear to operate in the requested period. "
+                "For older years, INMET automatic station coverage may start later (e.g., many SP stations start in 2006+)."
+            )
+            return pd.DataFrame()
         
         if not stations:
             LOGGER.warning("No INMET stations found.")
@@ -146,14 +170,21 @@ class INMETDownloader:
                     
                     # Filter by date range
                     # df_station['DT_MEDICAO'] is already datetime from _standardize_columns
-                    mask = (df_station['DT_MEDICAO'].dt.date >= start_date) & (df_station['DT_MEDICAO'].dt.date <= end_date)
+                    start_ts = pd.Timestamp(start_date)
+                    end_ts = pd.Timestamp(end_date)
+                    mask = df_station['DT_MEDICAO'].between(start_ts, end_ts)
                     df = df_station.loc[mask].copy()
                     
                     if not df.empty:
                         LOGGER.info(f"Successfully retrieved data from {station_name} ({station_id})")
                         break
                     else:
-                        LOGGER.warning(f"Data found for {station_id} but outside requested range.")
+                        min_dt = df_station['DT_MEDICAO'].min()
+                        max_dt = df_station['DT_MEDICAO'].max()
+                        LOGGER.warning(
+                            f"Data found for {station_id} but outside requested range. "
+                            f"Available range: {min_dt.date() if pd.notna(min_dt) else 'n/a'} to {max_dt.date() if pd.notna(max_dt) else 'n/a'}."
+                        )
                 else:
                     LOGGER.warning(f"No data found in ZIPs for station {station_id}.")
 
@@ -210,31 +241,23 @@ class INMETDownloader:
         # Extract specific station file
         try:
             with zipfile.ZipFile(zip_path, 'r') as z:
-                # Find file matching station code
-                # Pattern: INMET_SE_SP_A771_...
-                # We look for `_{station_code}_` in the filename
+                # Find file matching station code (case-insensitive; supports subfolders like 2000/)
+                # Typical pattern: INMET_SE_SP_A771_... .CSV
+                station_code_up = str(station_code).upper()
                 target_file = None
                 for filename in z.namelist():
-                    if f"_{station_code}_" in filename:
+                    base = os.path.basename(filename).upper()
+                    if f"_{station_code_up}_" in base:
                         target_file = filename
                         break
                 
                 if target_file:
                     LOGGER.info(f"Found file {target_file} in {zip_filename}")
                     with z.open(target_file) as f:
-                        # Read CSV. INMET CSVs usually have header at line 9 (skip 8 rows)
-                        # Separator is ';' and decimal is ','
-                        # Encoding is usually latin1 or utf-8 (try latin1 first for legacy)
-                        return pd.read_csv(
-                            f, 
-                            sep=';', 
-                            decimal=',', 
-                            skiprows=8, 
-                            encoding='latin1',
-                            on_bad_lines='skip'
-                        )
+                        raw = f.read().decode('latin1', errors='replace')
+                        return self._read_historical_csv_text(raw)
                 else:
-                    LOGGER.warning(f"Station {station_code} not found in {year}.zip")
+                    LOGGER.info(f"Station {station_code} not found in {year}.zip")
                     return pd.DataFrame()
         except zipfile.BadZipFile:
             LOGGER.error(f"Bad ZIP file: {zip_path}")
@@ -246,21 +269,65 @@ class INMETDownloader:
             return pd.DataFrame()
 
 
-    def _find_station_by_ibge(self, ibge_code: int) -> Optional[dict]:
+    @staticmethod
+    def _read_historical_csv_text(raw_text: str) -> pd.DataFrame:
+        """Read INMET historical CSV content.
+
+        Some INMET ZIP CSVs have a header line that breaks into the next line, and the
+        first data row begins on the same line as the header continuation. This function
+        normalizes that into a proper 1-line header + data rows before parsing.
+        """
+        lines = raw_text.splitlines()
+        if len(lines) <= 8:
+            return pd.DataFrame()
+
+        data_lines = lines[8:]
+        if not data_lines:
+            return pd.DataFrame()
+
+        date_re = re.compile(r"\d{4}[/-]\d{2}[/-]\d{2}")
+
+        def starts_with_date(s: str) -> bool:
+            return bool(re.match(r"^\s*\d{4}[/-]\d{2}[/-]\d{2}", s))
+
+        # If the second line is not a data row but contains a date later, it's header continuation
+        if len(data_lines) >= 2 and (not starts_with_date(data_lines[1])) and date_re.search(data_lines[1]):
+            m = date_re.search(data_lines[1])
+            if m is not None:
+                header = data_lines[0].rstrip(';') + data_lines[1][:m.start()].lstrip().rstrip(';')
+                first_row = data_lines[1][m.start():]
+                data_lines = [header, first_row] + data_lines[2:]
+
+        df = pd.read_csv(
+            io.StringIO("\n".join(data_lines)),
+            sep=';',
+            decimal=',',
+            engine='python',
+            on_bad_lines='skip',
+        )
+        # Drop trailing empty columns from extra ';'
+        df = df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")]
+        return df
+
+
+    def _find_stations_by_ibge(self, ibge_code: int) -> List[dict]:
         stations = self._get_stations()
         if stations is None or stations.empty:
-            return None
+            return []
             
         # Convert input to string and take first 6 or 7 digits
         ibge_str = str(ibge_code)
         
-        # Filter only automatic stations?
-        stations = stations[stations['TP_STATION'] == 'Automatic'].copy()
+        # Prefer automatic, but allow conventional as fallback
+        stations = stations.copy()
         
         # Try exact match (7 digits)
         match = stations[stations['IBGE_CODE'] == ibge_str]
         if not match.empty:
-            return match.iloc[0].to_dict()
+            match = match.copy()
+            match['__tp_rank'] = (match['TP_STATION'] != 'Automatic').astype(int)
+            match = match.sort_values(['__tp_rank']).drop(columns=['__tp_rank'])
+            return match.to_dict('records')
             
         # Try 6 digits match
         if len(ibge_str) >= 6:
@@ -270,9 +337,12 @@ class INMETDownloader:
             stations_valid = stations.dropna(subset=['IBGE_CODE'])
             match = stations_valid[stations_valid['IBGE_CODE'].str.startswith(ibge_6)]
             if not match.empty:
-                return match.iloc[0].to_dict()
+                match = match.copy()
+                match['__tp_rank'] = (match['TP_STATION'] != 'Automatic').astype(int)
+                match = match.sort_values(['__tp_rank']).drop(columns=['__tp_rank'])
+                return match.to_dict('records')
                 
-        return None
+        return []
 
 
     def _find_nearest_stations(self, lat: float, lon: float, n: int = 5) -> List[dict]:
@@ -285,8 +355,8 @@ class INMETDownloader:
         # Or use Haversine if needed, but for small distances Euclidean on lat/lon is okay-ish for selection
         # Better: convert to geometry and use distance
         
-        # Filter only automatic stations? User link points to "estações automáticas"
-        stations = stations[stations['TP_STATION'] == 'Automatic'].copy()
+        # Prefer automatic, but allow conventional as fallback
+        stations = stations.copy()
         
         # Ensure coordinates are float
         # Column names changed in recent inmetpy versions or API: VL_LATITUDE -> LATITUDE, VL_LONGITUDE -> LONGITUDE
@@ -300,9 +370,22 @@ class INMETDownloader:
         stations['dist'] = np.sqrt(
             (stations[lat_col] - lat)**2 + (stations[lon_col] - lon)**2
         )
-        
-        nearest = stations.sort_values('dist').head(n)
+
+        stations['__tp_rank'] = (stations['TP_STATION'] != 'Automatic').astype(int)
+        nearest = stations.sort_values(['__tp_rank', 'dist']).head(n).drop(columns=['__tp_rank'])
         return nearest.to_dict('records')
+
+    @staticmethod
+    def _dedupe_stations(stations: List[dict]) -> List[dict]:
+        seen = set()
+        out: List[dict] = []
+        for st in stations:
+            code = st.get('CD_STATION')
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            out.append(st)
+        return out
 
     def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         column_mapping = {
@@ -320,6 +403,9 @@ class INMETDownloader:
         
         # Rename columns if they exist
         df = df.rename(columns=column_mapping)
+
+        # Drop empty trailing columns from extra separators
+        df = df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")]
         
         # Convert date and time
         if 'DT_MEDICAO' in df.columns:
@@ -337,6 +423,32 @@ class INMETDownloader:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
         return df
+
+    @staticmethod
+    def _station_operates_in_range(station: dict, start_date: date, end_date: date) -> bool:
+        """Return True if station operational dates overlap requested range.
+
+        If start/end operation dates are missing, we keep the station as a candidate.
+        """
+        start_raw = station.get('DT_INICIO_OPERACAO')
+        end_raw = station.get('DT_FIM_OPERACAO')
+
+        try:
+            start_op = pd.to_datetime(start_raw, errors='coerce') if start_raw else pd.NaT
+            end_op = pd.to_datetime(end_raw, errors='coerce') if end_raw else pd.NaT
+        except Exception:
+            return True
+
+        if pd.notna(start_op):
+            start_op_date = start_op.date()
+            if end_date < start_op_date:
+                return False
+        if pd.notna(end_op):
+            end_op_date = end_op.date()
+            if start_date > end_op_date:
+                return False
+
+        return True
 
     def _calculate_heat_index(self, df: pd.DataFrame) -> pd.DataFrame:
         if 'TEM_INS' not in df.columns or 'UMD_INS' not in df.columns:
@@ -510,9 +622,9 @@ if __name__ == '__main__':
         try:
             df_result = downloader.fetch_daily_data(
                 shapefile_path=shapefile,
-                start='2024-01-01',
-                end='2024-06-01', # 10 days example
-                out_csv='data/output/inmet/São_Paulo_inmet_2024.csv'
+                start='2023-01-01',
+                end='2023-02-01', # 10 days example
+                out_csv='data/output/inmet/São_Paulo_inmet_2023.csv'
             )
             print("\n--- Download and processing successful ---")
             print(df_result.head())

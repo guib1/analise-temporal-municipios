@@ -11,6 +11,16 @@ import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
 
+
+def _coerce_int(series: pd.Series) -> pd.Series:
+    """Best-effort conversion to pandas nullable Int64."""
+    return pd.to_numeric(series, errors="coerce").astype("Int64")
+
+
+def _norm_str(series: pd.Series) -> pd.Series:
+    """Normalize to uppercase trimmed strings (NA-safe)."""
+    return series.astype("string").str.upper().str.strip()
+
 # Mapping from the first two IBGE digits to UF acronym used by DataSUS file names.
 UF_BY_CODE = {
     "11": "RO",
@@ -59,7 +69,6 @@ def _read_parquet_directory(path: Path) -> Optional[List[pd.DataFrame]]:
         except Exception as exc:
             LOGGER.warning("Failed to read parquet %s: %s", file, exc)
     return frames or None
-
 
 def _normalize_ibge_codes(cod_ibge: str | int) -> Tuple[str, str]:
     code = str(cod_ibge).strip()
@@ -114,9 +123,50 @@ def _decode_age_to_years(raw_age: Optional[str | int]) -> Optional[float]:
         return float(magnitude)
     return None
 
+
+def _decode_age_fields_to_years(
+    idade: Optional[str | int],
+    cod_idade: Optional[str | int],
+) -> Optional[float]:
+    """Decode SIH age using IDADE (magnitude) + COD_IDADE (unit).
+
+    COD_IDADE conventions (commonly observed in SIH extracts):
+      1 = hours, 2 = days, 3 = months, 4 = years
+
+    If COD_IDADE is missing/invalid, falls back to `_decode_age_to_years(idade)`.
+    """
+    if cod_idade in (None, "", "   "):
+        return _decode_age_to_years(idade)
+    try:
+        unit = int(cod_idade)
+    except (TypeError, ValueError):
+        return _decode_age_to_years(idade)
+
+    if unit <= 0:
+        return _decode_age_to_years(idade)
+    if idade in (None, "", "   "):
+        return None
+    try:
+        magnitude = int(idade)
+    except (TypeError, ValueError):
+        return None
+    if magnitude < 0:
+        return None
+
+    if unit == 1:  # hours
+        return magnitude / (24 * 365.25)
+    if unit == 2:  # days
+        return magnitude / 365.25
+    if unit == 3:  # months
+        return magnitude / 12
+    if unit == 4:  # years
+        return float(magnitude)
+    return _decode_age_to_years(idade)
+
 def _categorise_age(df: pd.DataFrame) -> pd.DataFrame:
     age_years = df["age_years"]
-    df["age_0_sum"] = ((age_years.notna()) & (age_years <= 0)).astype("Int64")
+    # SIH may encode newborn ages in hours/days/months. Those become fractions (<1 year).
+    df["age_0_sum"] = ((age_years.notna()) & (age_years >= 0) & (age_years < 1)).astype("Int64")
     df["age_1_10_sum"] = ((age_years >= 1) & (age_years <= 10)).astype("Int64")
     df["age_11_20_sum"] = ((age_years >= 11) & (age_years <= 20)).astype("Int64")
     df["age_21_30_sum"] = ((age_years >= 21) & (age_years <= 30)).astype("Int64")
@@ -361,16 +411,34 @@ class DataSUSDownloader:
             raise KeyError("Column 'DT_INTER' (admission date) not found in SIH dataset.")
         df["DT_INTER"] = _parse_sih_dates(df["DT_INTER"])
         df = df.dropna(subset=["DT_INTER"])
-        df = df[(df["DT_INTER"].dt.date >= start) & (df["DT_INTER"].dt.date <= end)]
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end) + pd.Timedelta(days=1) - pd.Timedelta(1, unit="ns")
+        dt_inter = pd.to_datetime(df["DT_INTER"], errors="coerce")
+        df = df[dt_inter.between(start_ts, end_ts)]
 
         # Sex classification.
-        df["man_sum"] = (df["SEXO"] == 1).astype("Int64") if "SEXO" in df.columns else 0
-        df["woman_sum"] = (df["SEXO"] == 3).astype("Int64") if "SEXO" in df.columns else 0
-        df["unknownsex_sum"] = 1 - df["man_sum"] - df["woman_sum"]
+        if "SEXO" in df.columns:
+            sexo_raw = df["SEXO"]
+            sexo_num = _coerce_int(sexo_raw)
+            sexo_str = _norm_str(sexo_raw)
+            man = (sexo_num == 1) | sexo_str.isin({"M", "MAS", "MASC", "MASCULINO"})
+            woman = (sexo_num == 3) | sexo_str.isin({"F", "FEM", "FEMININO"})
+            df["man_sum"] = man.astype("Int64")
+            df["woman_sum"] = woman.astype("Int64")
+            unknown = (1 - df["man_sum"] - df["woman_sum"]).clip(lower=0)
+            df["unknownsex_sum"] = unknown.astype("Int64")
+        else:
+            df["man_sum"] = 0
+            df["woman_sum"] = 0
+            df["unknownsex_sum"] = 0
 
         # Death indicator.
         if "MORTE" in df.columns:
-            df["deaths_sum"] = (df["MORTE"] == 1).astype("Int64")
+            morte_raw = df["MORTE"]
+            morte_num = _coerce_int(morte_raw)
+            morte_str = _norm_str(morte_raw)
+            deaths = (morte_num == 1) | morte_str.isin({"S", "SIM", "Y", "YES", "TRUE"})
+            df["deaths_sum"] = deaths.astype("Int64")
         else:
             df["deaths_sum"] = 0
 
@@ -378,7 +446,13 @@ class DataSUSDownloader:
 
         # Age decoding.
         if "IDADE" in df.columns:
-            df["age_years"] = df["IDADE"].apply(_decode_age_to_years)
+            if "COD_IDADE" in df.columns:
+                df["age_years"] = [
+                    _decode_age_fields_to_years(idade, cod)
+                    for idade, cod in zip(df["IDADE"].tolist(), df["COD_IDADE"].tolist(), strict=False)
+                ]
+            else:
+                df["age_years"] = df["IDADE"].apply(_decode_age_to_years)
         else:
             df["age_years"] = None
         df = _categorise_age(df)
@@ -386,13 +460,11 @@ class DataSUSDownloader:
 
     def _aggregate_weekly(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        week_end = (
-            df["DT_INTER"]
-            .dt.to_period("W-SUN")
-            .dt.to_timestamp(how="end")
-        )
-        normalized = pd.DatetimeIndex(week_end).normalize()
-        df["date"] = pd.Series(normalized, index=df.index)
+        dt_inter = pd.to_datetime(df["DT_INTER"], errors="coerce")
+        dt_index = pd.DatetimeIndex(dt_inter)
+        days_to_sunday = 6 - dt_index.dayofweek
+        week_end = dt_index.normalize() + pd.to_timedelta(days_to_sunday, unit="D")
+        df["date"] = pd.Series(week_end.normalize(), index=df.index)
 
         agg_dict = {
             "cases_sum": "sum",
@@ -411,8 +483,10 @@ class DataSUSDownloader:
             "age_m70_sum": "sum",
         }
         weekly = df.groupby("date", as_index=False).agg(agg_dict)
-        iso = weekly["date"].dt.isocalendar()
-        weekly["week_number_ind"] = iso.week.astype(int)
+        # Week number aligned with W-SUN: Sunday-based week index within the year.
+        # Matches the "%U" convention (00-53) where week 1 starts at the first Sunday.
+        date_index = pd.DatetimeIndex(pd.to_datetime(weekly["date"], errors="coerce"))
+        weekly["week_number_ind"] = pd.Series(date_index.strftime("%U").astype(int), index=weekly.index)
         weekly["Data"] = weekly["date"]  # duplicate column kept for compatibility
         return weekly[
             [
@@ -467,8 +541,8 @@ if __name__ == "__main__":
     downloader = DataSUSDownloader(storage_format="csv")
     df_result = downloader.fetch_sih_asthma_weekly(
         cod_ibge="3550308",
-        start="2025-01-01",
-        end="2025-12-31",
+        start="2000-01-01",
+        end="2000-12-31",
         output_csv="data/output/datasus/weekly_3550308_asma.csv",
     )
     print(df_result.head())
