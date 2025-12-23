@@ -91,7 +91,8 @@ class INMETDownloader:
         start: str,
         end: str,
         out_csv: str = 'data/output/inmet/inmet_daily.csv',
-        ibge_code: Optional[int] = None
+        ibge_code: Optional[int] = None,
+        frequency: str = 'daily',
     ) -> pd.DataFrame:
         """
         Downloads INMET data for the nearest station to the shapefile centroid.
@@ -198,6 +199,11 @@ class INMETDownloader:
 
         # Process and aggregate
         daily_df = self._process_data(df)
+
+        if frequency not in {'daily', 'weekly'}:
+            raise ValueError("frequency must be 'daily' or 'weekly'")
+        if frequency == 'weekly':
+            daily_df = self._daily_to_weekly(daily_df)
         
         if ibge_code:
             daily_df.insert(0, 'codigo_ibge', ibge_code)
@@ -486,15 +492,17 @@ class INMETDownloader:
 
         # Group by date
         agg_funcs = {}
-        
+
         # globalradiation (RAD_GLO)
+        # INMET provides hourly radiation in kJ/m². To match the base, we use DAILY TOTAL
+        # converted to kWh/m²/day (1 kWh = 3600 kJ).
         if 'RAD_GLO' in df.columns:
-            agg_funcs['RAD_GLO'] = ['max', 'min', 'mean']
-            
+            agg_funcs['RAD_GLO'] = ['sum']
+
         # precipitation (CHUVA)
         if 'CHUVA' in df.columns:
             agg_funcs['CHUVA'] = ['sum']
-            
+
         # temperature (TEM_MAX, TEM_MIN, TEM_INS)
         if 'TEM_MAX' in df.columns:
             agg_funcs['TEM_MAX'] = ['max']
@@ -502,15 +510,13 @@ class INMETDownloader:
             agg_funcs['TEM_MIN'] = ['min']
         if 'TEM_INS' in df.columns:
             agg_funcs['TEM_INS'] = ['mean']
-            
-        # humidity (UMD_MAX, UMD_MIN, UMD_INS)
-        if 'UMD_MAX' in df.columns:
-            agg_funcs['UMD_MAX'] = ['max']
+
+        # humidity (UMD_MIN, UMD_INS)
         if 'UMD_MIN' in df.columns:
             agg_funcs['UMD_MIN'] = ['min']
         if 'UMD_INS' in df.columns:
             agg_funcs['UMD_INS'] = ['mean']
-            
+
         # wind (VEN_VEL)
         if 'VEN_VEL' in df.columns:
             agg_funcs['VEN_VEL'] = ['mean']
@@ -530,16 +536,13 @@ class INMETDownloader:
         daily = daily.reset_index()
         daily.rename(columns={'DT_MEDICAO': 'date'}, inplace=True)
         
-        # Rename to requested names
+        # Rename to requested names (compatible with reference base)
         rename_map = {
-            'RAD_GLO_max': 'globalradiation_max',
-            'RAD_GLO_min': 'globalradiation_min',
-            'RAD_GLO_mean': 'globalradiation_mea',
+            'RAD_GLO_sum': 'globalradiation_kj_sum',
             'CHUVA_sum': 'precipitation_sum',
             'TEM_MAX_max': 'temperature_max',
             'TEM_MIN_min': 'temperature_min',
-            'TEM_INS_mean': 'temperature_med',
-            'UMD_MAX_max': 'humidity_max',
+            'TEM_INS_mean': 'temperature_mea',
             'UMD_MIN_min': 'humidity_min',
             'UMD_INS_mean': 'humidity_mea',
             'VEN_VEL_mean': 'wind_mea',
@@ -549,13 +552,21 @@ class INMETDownloader:
         }
         
         daily.rename(columns=rename_map, inplace=True)
+
+        # Convert daily radiation total to kWh/m²/day and keep base-compatible columns.
+        if 'globalradiation_kj_sum' in daily.columns:
+            rad_kwh_day = daily['globalradiation_kj_sum'] / 3600.0
+            daily['globalradiation_max'] = rad_kwh_day
+            daily['globalradiation_min'] = rad_kwh_day
+            daily['globalradiation_mea'] = rad_kwh_day
+            daily = daily.drop(columns=['globalradiation_kj_sum'])
         
         # Ensure all requested columns exist (fill with NaN if missing)
         requested_cols = [
             'globalradiation_max', 'globalradiation_min', 'globalradiation_mea',
             'precipitation_sum',
-            'temperature_max', 'temperature_min', 'temperature_med',
-            'humidity_max', 'humidity_min', 'humidity_mea',
+            'temperature_max', 'temperature_min', 'temperature_mea',
+            'humidity_min', 'humidity_mea',
             'wind_mea',
             'heatindex_max', 'heatindex_min', 'heatindex_mea'
         ]
@@ -564,7 +575,38 @@ class INMETDownloader:
             if col not in daily.columns:
                 daily[col] = np.nan
                 
-        return daily[ ['date'] + requested_cols ]
+        return daily[['date'] + requested_cols]
+
+    @staticmethod
+    def _daily_to_weekly(daily: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate daily rows into base-style weekly rows ending on Sunday (W-SUN)."""
+        if daily.empty:
+            return daily
+
+        df = daily.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date']).set_index('date').sort_index()
+
+        agg = {
+            'globalradiation_max': 'max',
+            'globalradiation_min': 'min',
+            'globalradiation_mea': 'mean',
+            'precipitation_sum': 'sum',
+            'temperature_max': 'max',
+            'temperature_min': 'min',
+            'temperature_mea': 'mean',
+            'humidity_min': 'min',
+            'humidity_mea': 'mean',
+            'wind_mea': 'mean',
+            'heatindex_max': 'max',
+            'heatindex_min': 'min',
+            'heatindex_mea': 'mean',
+        }
+
+        weekly = df.resample('W-SUN').agg(agg)  # type: ignore[arg-type]
+        weekly = weekly.reset_index()
+        weekly['date'] = pd.to_datetime(weekly['date'], errors='coerce').dt.normalize()
+        return weekly
 
     @staticmethod
     def _parse_date(s: str) -> date:
