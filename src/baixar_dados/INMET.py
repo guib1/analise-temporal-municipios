@@ -494,10 +494,10 @@ class INMETDownloader:
         agg_funcs = {}
 
         # globalradiation (RAD_GLO)
-        # INMET provides hourly radiation in kJ/m². To match the base, we use DAILY TOTAL
-        # converted to kWh/m²/day (1 kWh = 3600 kJ).
+        # INMET provides hourly radiation in kJ/m². We compute max/min/mean of hourly values
+        # for each day, then convert to MJ/m² (divide by 1000).
         if 'RAD_GLO' in df.columns:
-            agg_funcs['RAD_GLO'] = ['sum']
+            agg_funcs['RAD_GLO'] = ['max', 'min', 'mean']
 
         # precipitation (CHUVA)
         if 'CHUVA' in df.columns:
@@ -538,7 +538,9 @@ class INMETDownloader:
         
         # Rename to requested names (compatible with reference base)
         rename_map = {
-            'RAD_GLO_sum': 'globalradiation_kj_sum',
+            'RAD_GLO_max': 'globalradiation_max_kj',
+            'RAD_GLO_min': 'globalradiation_min_kj',
+            'RAD_GLO_mean': 'globalradiation_mea_kj',
             'CHUVA_sum': 'precipitation_sum',
             'TEM_MAX_max': 'temperature_max',
             'TEM_MIN_min': 'temperature_min',
@@ -553,14 +555,14 @@ class INMETDownloader:
         
         daily.rename(columns=rename_map, inplace=True)
 
-        # Convert daily radiation total to kWh/m²/day and keep base-compatible columns.
-        if 'globalradiation_kj_sum' in daily.columns:
-            rad_kwh_day = daily['globalradiation_kj_sum'] / 3600.0
-            daily['globalradiation_max'] = rad_kwh_day
-            daily['globalradiation_min'] = rad_kwh_day
-            daily['globalradiation_mea'] = rad_kwh_day
-            daily = daily.drop(columns=['globalradiation_kj_sum'])
-        
+        # Convert radiation from kJ/m² to MJ/m² (1 MJ = 1000 kJ)
+        for suffix in ['max', 'min', 'mea']:
+            kj_col = f'globalradiation_{suffix}_kj'
+            mj_col = f'globalradiation_{suffix}'
+            if kj_col in daily.columns:
+                daily[mj_col] = daily[kj_col] / 1000.0
+                daily = daily.drop(columns=[kj_col])
+
         # Ensure all requested columns exist (fill with NaN if missing)
         requested_cols = [
             'globalradiation_max', 'globalradiation_min', 'globalradiation_mea',
@@ -579,7 +581,11 @@ class INMETDownloader:
 
     @staticmethod
     def _daily_to_weekly(daily: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate daily rows into base-style weekly rows ending on Sunday (W-SUN)."""
+        """Aggregate daily rows into base-style weekly rows ending on Sunday (W-SUN).
+        
+        For globalradiation: daily values already have max/min/mean per day (MJ/m²).
+        Weekly aggregation produces max of daily max, min of daily min, mean of daily mean.
+        """
         if daily.empty:
             return daily
 
@@ -587,10 +593,11 @@ class INMETDownloader:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.dropna(subset=['date']).set_index('date').sort_index()
 
+        # Aggregation rules for weekly
         agg = {
-            'globalradiation_max': 'max',
-            'globalradiation_min': 'min',
-            'globalradiation_mea': 'mean',
+            'globalradiation_max': 'max',  # Weekly max = max of daily maxes
+            'globalradiation_min': 'min',  # Weekly min = min of daily mins  
+            'globalradiation_mea': 'mean', # Weekly mean = mean of daily means
             'precipitation_sum': 'sum',
             'temperature_max': 'max',
             'temperature_min': 'min',
@@ -604,6 +611,7 @@ class INMETDownloader:
         }
 
         weekly = df.resample('W-SUN').agg(agg)  # type: ignore[arg-type]
+        
         weekly = weekly.reset_index()
         weekly['date'] = pd.to_datetime(weekly['date'], errors='coerce').dt.normalize()
         return weekly
@@ -656,7 +664,6 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     downloader = INMETDownloader()
     
-    # Example usage for Diadema
     shapefile = 'data/shapefiles/SP-São_Paulo/SP_São_Paulo.shp'
     
     # Check if shapefile exists before running
@@ -665,7 +672,7 @@ if __name__ == '__main__':
             df_result = downloader.fetch_daily_data(
                 shapefile_path=shapefile,
                 start='2023-01-01',
-                end='2023-02-01', # 10 days example
+                end='2023-02-01',
                 out_csv='data/output/inmet/São_Paulo_inmet_2023.csv'
             )
             print("\n--- Download and processing successful ---")

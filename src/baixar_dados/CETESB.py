@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -160,6 +161,28 @@ class CETESBDownloader:
             end_date_fmt = end_date
 
         all_dfs = []
+
+        def _pick_qualar_table(tables: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
+            """Pick the best QUALAR table containing Date+Time+Value columns.
+
+            QUALAR pages may include summary tables (e.g., weekly). We prefer the
+            table that contains both a date column ("Data"), a time column ("Hora"),
+            and a value column ("Média Horária" or "Concentração").
+            """
+            for t in tables:
+                if t is None or t.empty:
+                    continue
+                cols = [str(c).strip() for c in t.columns]
+                has_date = any('Data' in c for c in cols)
+                has_time = any('Hora' in c for c in cols)
+                has_value = any(('Média Horária' in c) or ('Concentração' in c) for c in cols)
+                if has_date and has_time and has_value:
+                    return t
+            # Fallback: if none match perfectly, return the first non-empty table
+            for t in tables:
+                if t is not None and not t.empty:
+                    return t
+            return None
         
         for var_name, param_id in self.PARAMS.items():
             LOGGER.info(f"Baixando {var_name} (ID {param_id})...")
@@ -177,7 +200,7 @@ class CETESBDownloader:
                 "dataInicialStr": start_date_fmt,
                 "dataFinalStr": end_date_fmt,
                 "iTipoDado": "P", # Média Horária (P)
-                "cDadosInvalidos": "on",
+                # Importante: NÃO incluir dados inválidos (evita zeros/sentinelas afetando min/média)
                 "estacaoVO.nestcaMonto": str(station_id),
                 "parametroVO.nparmt": str(param_id),
                 "btnPesquisar": "Pesquisar"
@@ -192,20 +215,23 @@ class CETESBDownloader:
                     LOGGER.error(f"Erro HTTP {resp.status_code} ao baixar {var_name}")
                     continue
 
-                # Parse HTML Table
-                try:
-                    # Try to read with header=1 (skipping the title row)
-                    # Use match="Data" to find the correct table
-                    dfs = pd.read_html(io.StringIO(resp.text), decimal=',', thousands='.', header=1, match="Data")
-                except ValueError:
+                # Parse HTML Tables
+                dfs: List[pd.DataFrame] = []
+                for hdr in (1, 0):
+                    try:
+                        dfs = pd.read_html(io.StringIO(resp.text), decimal=',', thousands='.', header=hdr)
+                        if dfs:
+                            break
+                    except ValueError:
+                        dfs = []
+                if not dfs:
                     LOGGER.warning(f"Nenhuma tabela encontrada no HTML para {var_name}")
                     continue
                 
-                if not dfs:
+                df = _pick_qualar_table(dfs)
+                if df is None or df.empty:
                     LOGGER.warning(f"Sem dados retornados para {var_name}")
                     continue
-                
-                df = dfs[0]
                 
                 # Check for "Nenhum Registro Encontrado"
                 if "Nenhum Registro Encontrado" in str(df.columns) or (not df.empty and "Nenhum Registro Encontrado" in str(df.iloc[0].values)):
@@ -291,7 +317,7 @@ class CETESBDownloader:
                 continue
                 
         if not all_dfs:
-            LOGGER.warning("Nenhum dado obtido. Gerando DataFrame preenchido com zeros.")
+            LOGGER.warning("Nenhum dado obtido. Gerando DataFrame com colunas vazias (NaN).")
             try:
                 d_start = datetime.strptime(start_date_fmt, "%d/%m/%Y")
                 d_end = datetime.strptime(end_date_fmt, "%d/%m/%Y")
@@ -306,14 +332,12 @@ class CETESBDownloader:
             for df in all_dfs[1:]:
                 final_df = pd.merge(final_df, df, on='date', how='outer')
 
-        # Garantir que todas as colunas existam e preencher com 0
+        # Garantir que todas as colunas existam (mantendo vazio/NaN quando não houver dado)
         for var_name in self.PARAMS.keys():
             for metric in ['max', 'min', 'mea']:
                 col_name = f'{var_name}_{metric}'
                 if col_name not in final_df.columns:
-                    final_df[col_name] = 0.0
-        
-        final_df = final_df.fillna(0)
+                    final_df[col_name] = np.nan
             
         # Save to CSV
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
@@ -326,4 +350,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # Exemplo de uso
     dl = CETESBDownloader()
-    dl.fetch_data("data/shapefiles/SP-Diadema/SP_Diadema.shp", "01/01/2024", "01/02/2024")
+    dl.fetch_data("data/shapefiles/SP-São_Paulo/SP_São_Paulo.shp", "01/01/2008", "01/02/2008")
