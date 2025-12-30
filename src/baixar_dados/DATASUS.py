@@ -283,7 +283,7 @@ class DataSUSDownloader:
     # --------------------------------------------------------------------- #
     # Public API>
     # --------------------------------------------------------------------- #
-    def fetch_sih_asthma_weekly(
+    def fetch_sih_asthma_daily(
         self,
         cod_ibge: str | int,
         start: str | date | datetime,
@@ -292,23 +292,12 @@ class DataSUSDownloader:
         output_csv: str | Path | None = None,
     ) -> pd.DataFrame:
         """
-        Download SIH/SUS records for the given municipality and aggregate weekly metrics.
+        Download SIH/SUS records for the given municipality and aggregate daily metrics.
 
-        Parameters
-        ----------
-        cod_ibge:
-            Municipality IBGE code (6 or 7 digits).
-        start, end:
-            Date boundaries (inclusive). Accepts `datetime.date`, `datetime.datetime` or ISO strings.
-        cid10_prefixes:
-            Iterable of CID-10 codes or prefixes that identify the diagnoses of interest.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Data frame with the weekly aggregations aligned with the glossary columns.
-
-        If ``output_csv`` is provided, the aggregated dataframe is also written to disk.
+        Notes
+        -----
+        - Daily aggregation is by admission date (DT_INTER) normalized to midnight.
+        - This is a true daily tally (not a weekly value expanded to days).
         """
         start_date = pd.to_datetime(start).date()
         end_date = pd.to_datetime(end).date()
@@ -337,7 +326,7 @@ class DataSUSDownloader:
 
         if not frames:
             LOGGER.warning("No data downloaded for %s between %s and %s", code7, start, end)
-            return _empty_weekly_dataframe()
+            return _empty_daily_dataframe()
 
         raw = pd.concat(frames, ignore_index=True)
         filtered = self._filter_records(
@@ -356,15 +345,16 @@ class DataSUSDownloader:
         )
         if filtered.empty:
             LOGGER.warning("No SIH records found for %s in the selected period", code7)
-            return _empty_weekly_dataframe()
-        aggregated = self._aggregate_weekly(filtered)
+            return _empty_daily_dataframe()
+
+        aggregated = self._aggregate_daily(filtered)
         aggregated["codibge"] = code7
         aggregated = aggregated.sort_values("date").reset_index(drop=True)
 
         if output_csv is not None:
             output_path = Path(output_csv)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            LOGGER.info("Saving weekly aggregation to CSV %s", output_path)
+            LOGGER.info("Saving daily aggregation to CSV %s", output_path)
             aggregated.to_csv(output_path, index=False)
 
         return aggregated
@@ -458,13 +448,10 @@ class DataSUSDownloader:
         df = _categorise_age(df)
         return df
 
-    def _aggregate_weekly(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _aggregate_daily(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         dt_inter = pd.to_datetime(df["DT_INTER"], errors="coerce")
-        dt_index = pd.DatetimeIndex(dt_inter)
-        days_to_sunday = 6 - dt_index.dayofweek
-        week_end = dt_index.normalize() + pd.to_timedelta(days_to_sunday, unit="D")
-        df["date"] = pd.Series(week_end.normalize(), index=df.index)
+        df["date"] = pd.Series(pd.DatetimeIndex(dt_inter).normalize(), index=df.index)
 
         agg_dict = {
             "cases_sum": "sum",
@@ -482,13 +469,11 @@ class DataSUSDownloader:
             "age_61_70_sum": "sum",
             "age_m70_sum": "sum",
         }
-        weekly = df.groupby("date", as_index=False).agg(agg_dict)
-        # Week number aligned with W-SUN: Sunday-based week index within the year.
-        # Matches the "%U" convention (00-53) where week 1 starts at the first Sunday.
-        date_index = pd.DatetimeIndex(pd.to_datetime(weekly["date"], errors="coerce"))
-        weekly["week_number_ind"] = pd.Series(date_index.strftime("%U").astype(int), index=weekly.index)
-        weekly["Data"] = weekly["date"]  # duplicate column kept for compatibility
-        return weekly[
+        daily = df.groupby("date", as_index=False).agg(agg_dict)
+        date_index = pd.DatetimeIndex(pd.to_datetime(daily["date"], errors="coerce"))
+        daily["week_number_ind"] = pd.Series(date_index.strftime("%U").astype(int), index=daily.index)
+        daily["Data"] = daily["date"]  # duplicate column kept for compatibility
+        return daily[
             [
                 "date",
                 "cases_sum",
@@ -510,9 +495,8 @@ class DataSUSDownloader:
             ]
         ]
 
-
-def _empty_weekly_dataframe() -> pd.DataFrame:
-    """Return an empty dataframe with the expected columns."""
+def _empty_daily_dataframe() -> pd.DataFrame:
+    """Return an empty dataframe with the expected columns (daily schema)."""
     columns = [
         "date",
         "cases_sum",
@@ -539,10 +523,10 @@ if __name__ == "__main__":
     # Basic manual test (requires network access and supporting libraries).
     logging.basicConfig(level=logging.INFO)
     downloader = DataSUSDownloader(storage_format="csv")
-    df_result = downloader.fetch_sih_asthma_weekly(
+    df_result = downloader.fetch_sih_asthma_daily(
         cod_ibge="3550308",
         start="2000-01-01",
         end="2000-12-31",
-        output_csv="data/output/datasus/weekly_3550308_asma.csv",
+        output_csv="data/output/datasus/daily_3550308_asma.csv",
     )
     print(df_result.head())

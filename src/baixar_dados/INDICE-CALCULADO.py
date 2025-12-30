@@ -5,7 +5,6 @@ import numpy as np
 import requests
 from datetime import datetime
 import scipy.stats as stats
-from INMET import INMETDownloader
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -17,7 +16,13 @@ class DiversosDownloader:
     """
     
     def __init__(self):
-        self.inmet_downloader = INMETDownloader()
+        self.inmet_downloader = None
+
+    def _get_inmet_downloader(self):
+        if self.inmet_downloader is None:
+            from INMET import INMETDownloader  # import local para evitar cache antigo em notebook
+            self.inmet_downloader = INMETDownloader()
+        return self.inmet_downloader
 
     def _calculate_heat_index(self, row):
         """
@@ -196,20 +201,36 @@ class DiversosDownloader:
                 
         return spi_series
 
-    def fetch_data(self, shapefile_path, start_date, end_date, output_csv="data/output/diversos/diversos_data.csv"):
+    def fetch_data(
+        self,
+        shapefile_path,
+        start_date,
+        end_date,
+        output_csv="data/output/diversos/diversos_data.csv",
+        inmet_df: pd.DataFrame | None = None,
+    ):
         LOGGER.info("Iniciando processamento de dados diversos...")
         
         # 1. Obter dados base do INMET (Temp, Hum, Precip)
         # Usamos um arquivo temporário para o output do INMET.
         # Precisa ser único para permitir execução multi-município sem sobrescrever.
-        shp_stem = Path(str(shapefile_path)).stem
-        temp_inmet_csv = f"data/cache/temp_inmet_diversos_{shp_stem}.csv"
-        try:
-            # INMETDownloader usa fetch_daily_data
-            df_inmet = self.inmet_downloader.fetch_daily_data(shapefile_path, start_date, end_date, out_csv=temp_inmet_csv)
-        except Exception as e:
-            LOGGER.error(f"Erro ao baixar dados base do INMET: {e}")
-            df_inmet = pd.DataFrame()
+        df_inmet = pd.DataFrame()
+        if inmet_df is not None and not inmet_df.empty:
+            df_inmet = inmet_df.copy()
+        else:
+            shp_stem = Path(str(shapefile_path)).stem
+            temp_inmet_csv = f"data/cache/temp_inmet_diversos_{shp_stem}.csv"
+            try:
+                # INMETDownloader usa fetch_daily_data
+                df_inmet = self._get_inmet_downloader().fetch_daily_data(
+                    shapefile_path,
+                    start_date,
+                    end_date,
+                    out_csv=temp_inmet_csv,
+                )
+            except Exception as e:
+                LOGGER.error(f"Erro ao baixar dados base do INMET: {e}")
+                df_inmet = pd.DataFrame()
 
         if df_inmet.empty:
             LOGGER.warning("Sem dados meteorológicos base. Gerando colunas vazias.")
@@ -230,8 +251,9 @@ class DiversosDownloader:
             rename_map = {
                 'temperature_max': 'temp_max',
                 'temperature_min': 'temp_min',
-                'temperature_med': 'temp_mean',
-                'humidity_max': 'hum_max',
+                'temperature_med': 'temp_mean',  # compat legado
+                'temperature_mea': 'temp_mean',
+                'humidity_max': 'hum_max',       # não existe no INMET atual (mantido por compat)
                 'humidity_min': 'hum_min',
                 'humidity_mea': 'hum_mean',
                 'precipitation_sum': 'precip_total'
@@ -250,9 +272,9 @@ class DiversosDownloader:
             df['heatindex_min'] = df.apply(lambda row: self._calculate_heat_index({'temp_max': row.get('temp_min'), 'hum_min': row.get('hum_max')}), axis=1)
             df['heatindex_mea'] = df.apply(lambda row: self._calculate_heat_index({'temp_max': row.get('temp_mean'), 'hum_min': row.get('hum_mean')}), axis=1)
         else:
-            df['heatindex_max'] = 0.0
-            df['heatindex_min'] = 0.0
-            df['heatindex_mea'] = 0.0
+            df['heatindex_max'] = np.nan
+            df['heatindex_min'] = np.nan
+            df['heatindex_mea'] = np.nan
 
         # 3. Ondas de Calor / Frio
         # Definição: Meehl and Tebaldi (2004)
@@ -262,7 +284,7 @@ class DiversosDownloader:
         # 3. Tmax > T1 (97.5th percentile) for at least 3 days
         # 4. Average Tmax > T1
         
-        if 'temp_max' in df.columns:
+        if 'temp_max' in df.columns and pd.to_numeric(df['temp_max'], errors='coerce').notna().any():
             # Calculate percentiles based on the available data
             # Note: Ideally this should be a long-term historical baseline
             T1 = df['temp_max'].quantile(0.975)
@@ -311,11 +333,11 @@ class DiversosDownloader:
             df.drop(columns=['group_hw'], inplace=True)
                     
         else:
-            df['heatwave_has'] = 0
-            df['heatwaveduration_sum'] = 0
-            df['heatwaveintensity_ind'] = 0.0
+            df['heatwave_has'] = pd.NA
+            df['heatwaveduration_sum'] = pd.NA
+            df['heatwaveintensity_ind'] = np.nan
 
-        if 'temp_min' in df.columns:
+        if 'temp_min' in df.columns and pd.to_numeric(df['temp_min'], errors='coerce').notna().any():
             # Cold Wave (Symmetric definition assumption)
             # T1 = 2.5th percentile (symmetric to 97.5)
             # T2 = 19th percentile (symmetric to 81)
@@ -329,7 +351,7 @@ class DiversosDownloader:
             
             df['coldwave_has'] = 0
             df['coldwaveduration_sum'] = 0
-            df['coldwaveintensity_ind'] = 0.0
+            df['coldwaveintensity'] = 0.0
             
             groups_cold = df[is_candidate_cold].groupby('group_cw')
             
@@ -356,40 +378,37 @@ class DiversosDownloader:
                 # Intensity: Qtd de dias / temperatura mínima (pico de frio)
                 min_t = group['temp_min'].min()
                 intensity = duration / min_t if min_t != 0 else 0
-                df.loc[indices, 'coldwaveintensity_ind'] = intensity
+                df.loc[indices, 'coldwaveintensity'] = intensity
                 
             # Cleanup aux column
             df.drop(columns=['group_cw'], inplace=True)
         else:
-            df['coldwave_has'] = 0
-            df['coldwaveduration_sum'] = 0
-            df['coldwaveintensity_ind'] = 0.0
+            df['coldwave_has'] = pd.NA
+            df['coldwaveduration_sum'] = pd.NA
+            df['coldwaveintensity'] = np.nan
 
         # 4. SPI
-        if 'precip_total' in df.columns:
+        if 'precip_total' in df.columns and pd.to_numeric(df['precip_total'], errors='coerce').notna().any():
             df['spi_ind'] = self._calculate_spi(df, 'precip_total')
         else:
-            df['spi_ind'] = 0.0
+            df['spi_ind'] = np.nan
 
         # 5. El Niño
         df_elnino = self._get_elnino_data(start_date, end_date)
         if not df_elnino.empty:
             df = pd.merge(df, df_elnino, on='date', how='left')
-            df['elnino_ind'] = df['elnino_ind'].fillna(0)
+            # keep NaN when missing
         else:
-            df['elnino_ind'] = 0
+            df['elnino_ind'] = np.nan
 
         # Limpeza final
         cols_to_keep = [
             'date', 
             'heatindex_max', 'heatindex_min', 'heatindex_mea',
             'heatwave_has', 'heatwaveduration_sum', 'heatwaveintensity_ind',
-            'coldwave_has', 'coldwaveduration_sum', 'coldwaveintensity_ind',
+            'coldwave_has', 'coldwaveduration_sum', 'coldwaveintensity',
             'spi_ind', 'elnino_ind'
         ]
-        
-        # Preencher NaNs com 0 (exceto talvez SPI que pode ser NaN real, mas o usuário pediu 0 no caso anterior)
-        df = df.fillna(0)
         
         # Filtrar colunas existentes
         final_cols = [c for c in cols_to_keep if c in df.columns]
