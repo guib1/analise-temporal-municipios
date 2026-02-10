@@ -12,6 +12,8 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from src.utils.geo import parse_date, format_ddmmyyyy
+
 # Carrega variáveis de ambiente
 load_dotenv()
 
@@ -143,22 +145,8 @@ class CETESBDownloader:
         LOGGER.info(f"Usando estação ID: {station_id}")
         
         # Ensure dates are dd/mm/yyyy
-        try:
-            if "-" in start_date:
-                dt_start = datetime.strptime(start_date, "%Y-%m-%d")
-                start_date_fmt = dt_start.strftime("%d/%m/%Y")
-            else:
-                start_date_fmt = start_date
-                
-            if "-" in end_date:
-                dt_end = datetime.strptime(end_date, "%Y-%m-%d")
-                end_date_fmt = dt_end.strftime("%d/%m/%Y")
-            else:
-                end_date_fmt = end_date
-        except ValueError:
-            LOGGER.warning("Formato de data desconhecido. Usando como está.")
-            start_date_fmt = start_date
-            end_date_fmt = end_date
+        start_date_fmt = format_ddmmyyyy(start_date)
+        end_date_fmt = format_ddmmyyyy(end_date)
 
         all_dfs = []
 

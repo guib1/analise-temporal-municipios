@@ -13,6 +13,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
+from src.utils.geo import parse_date, centroid_from_shapefile, get_ibge_code
+
 # Ensure local 'merradownload' package can be imported when running as a script
 PROJECT_SRC = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = PROJECT_SRC.parent
@@ -32,7 +34,6 @@ try:
     import geopandas as gpd
 except ImportError:  # pragma: no cover
     gpd = None
-
 
 @dataclass(frozen=True)
 class MerraVariable:
@@ -107,13 +108,13 @@ class MERRA2Downloader:
             else:
                 out_csv_path = Path.cwd() / out_csv_path
 
-        start_date = self._parse_date(start)
-        end_date = self._parse_date(end)
+        start_date = parse_date(start)
+        end_date = parse_date(end)
         if end_date < start_date:
             raise ValueError("end date must be after start date")
 
-        ibge_code = self._get_ibge_code(shapefile_path)
-        lat, lon = self._centroid_from_shapefile(shapefile_path)
+        ibge_code = get_ibge_code(shapefile_path)
+        lat, lon = centroid_from_shapefile(shapefile_path)
         loc_label = self._build_location_label(shapefile_path)
 
         selected = list(variables) if variables else list(self.VARIABLES.keys())
@@ -275,46 +276,6 @@ class MERRA2Downloader:
         if self.cache_dir.exists():
             shutil.rmtree(self.cache_dir, ignore_errors=True)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-    @staticmethod
-    def _parse_date(value: str) -> date:
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(value, fmt).date()
-            except ValueError:
-                continue
-        raise ValueError(f"Invalid date format: {value}. Use DD/MM/YYYY or YYYY-MM-DD")
-
-    def _centroid_from_shapefile(self, shp_path: str) -> Tuple[float, float]:
-        if gpd is None:
-            raise RuntimeError("geopandas is not installed; required for shapefile operations.")
-        gdf = gpd.read_file(shp_path)
-        try:
-            geom = gdf.union_all()
-        except AttributeError:  # geopandas < 0.13
-            geom = gdf.unary_union
-        centroid = geom.centroid
-        return float(centroid.y), float(centroid.x)
-
-    def _get_ibge_code(self, shapefile_path: str) -> Optional[int]:
-        if gpd is not None:
-            try:
-                gdf = gpd.read_file(shapefile_path)
-                for col in ("code_muni", "CD_MUN", "CD_GEOCMU"):
-                    if col in gdf.columns:
-                        return int(gdf[col].iloc[0])
-            except Exception as exc:  # pragma: no cover
-                LOGGER.warning("Could not read IBGE code from shapefile: %s", exc)
-
-        directory = Path(shapefile_path).parent
-        for csv_file in directory.glob("*_ibge.csv"):
-            try:
-                df = pd.read_csv(csv_file)
-                if "codigo_ibge" in df.columns:
-                    return int(df["codigo_ibge"].iloc[0])
-            except Exception as exc:  # pragma: no cover
-                LOGGER.warning("Failed to parse %s: %s", csv_file, exc)
-        return None
 
     def _build_location_label(self, shapefile_path: str) -> str:
         stem = Path(shapefile_path).stem

@@ -7,6 +7,8 @@ from datetime import datetime
 import scipy.stats as stats
 from pathlib import Path
 
+from src.utils.geo import parse_date
+
 LOGGER = logging.getLogger(__name__)
 
 class DiversosDownloader:
@@ -236,8 +238,8 @@ class DiversosDownloader:
             LOGGER.warning("Sem dados meteorológicos base. Gerando colunas vazias.")
             # Cria dataframe vazio com datas
             try:
-                dates = pd.date_range(start=datetime.strptime(start_date, "%d/%m/%Y"), 
-                                     end=datetime.strptime(end_date, "%d/%m/%Y"))
+                dates = pd.date_range(start=parse_date(start_date), 
+                                     end=parse_date(end_date))
                 df = pd.DataFrame({'date': dates.date})
             except:
                 return pd.DataFrame()

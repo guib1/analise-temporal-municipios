@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 from shapely.geometry import Point, Polygon, box
 from shapely.wkt import dumps as wkt_dumps
 
+from src.utils.geo import parse_date
+
 # Carrega variáveis de ambiente
 load_dotenv()
 
@@ -115,8 +117,8 @@ class TropomiDownloader:
         """
         Baixa, processa e agrega dados TROPOMI.
         """
-        start_dt = datetime.strptime(start_date, "%d/%m/%Y")
-        end_dt = datetime.strptime(end_date, "%d/%m/%Y") + timedelta(days=1)
+        start_dt = datetime.combine(parse_date(start_date), datetime.min.time())
+        end_dt = datetime.combine(parse_date(end_date), datetime.min.time()) + timedelta(days=1)
         
         # Formato ISO para OData
         start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")

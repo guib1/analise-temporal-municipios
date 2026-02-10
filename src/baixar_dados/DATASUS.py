@@ -53,7 +53,11 @@ UF_BY_CODE = {
 }
 
 # CID-10 codes that cover asthma diagnoses.
-DEFAULT_ASMA_CODES = ("J45", "J450", "J451", "J452", "J453", "J454", "J455", "J456", "J459")
+# J45 = Asthma, J46 = Status asthmaticus (acute severe asthma).
+DEFAULT_ASMA_CODES = (
+    "J45", "J450", "J451", "J452", "J453", "J454", "J455", "J456", "J459",
+    "J46",
+)
 
 def _read_parquet_directory(path: Path) -> Optional[List[pd.DataFrame]]:
     """Load all parquet files inside a directory as dataframes."""
@@ -348,7 +352,7 @@ class DataSUSDownloader:
             return _empty_daily_dataframe()
 
         aggregated = self._aggregate_daily(filtered)
-        aggregated["codibge"] = code7
+        aggregated["codigo_ibge"] = code7
         aggregated = aggregated.sort_values("date").reset_index(drop=True)
 
         if output_csv is not None:
@@ -470,15 +474,11 @@ class DataSUSDownloader:
             "age_m70_sum": "sum",
         }
         daily = df.groupby("date", as_index=False).agg(agg_dict)
-        date_index = pd.DatetimeIndex(pd.to_datetime(daily["date"], errors="coerce"))
-        daily["week_number_ind"] = pd.Series(date_index.strftime("%U").astype(int), index=daily.index)
-        daily["Data"] = daily["date"]  # duplicate column kept for compatibility
         return daily[
             [
                 "date",
                 "cases_sum",
                 "deaths_sum",
-                "week_number_ind",
                 "age_0_sum",
                 "age_1_10_sum",
                 "age_11_20_sum",
@@ -491,7 +491,6 @@ class DataSUSDownloader:
                 "man_sum",
                 "woman_sum",
                 "unknownsex_sum",
-                "Data",
             ]
         ]
 
@@ -501,7 +500,6 @@ def _empty_daily_dataframe() -> pd.DataFrame:
         "date",
         "cases_sum",
         "deaths_sum",
-        "week_number_ind",
         "age_0_sum",
         "age_1_10_sum",
         "age_11_20_sum",
@@ -514,8 +512,7 @@ def _empty_daily_dataframe() -> pd.DataFrame:
         "man_sum",
         "woman_sum",
         "unknownsex_sum",
-        "Data",
-        "codibge",
+        "codigo_ibge",
     ]
     return pd.DataFrame(columns=columns)
 

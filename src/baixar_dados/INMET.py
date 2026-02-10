@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, date
 from typing import List, Optional, Tuple
 import pandas as pd
 import numpy as np
-# from inmetpy.stations import InmetStation  # Deprecated
+
+from src.utils.geo import parse_date, centroid_from_shapefile, get_ibge_code
 
 try:
     import geopandas as gpd
@@ -97,12 +98,12 @@ class INMETDownloader:
         """
         Downloads INMET data for the nearest station to the shapefile centroid.
         """
-        start_date = self._parse_date(start)
-        end_date = self._parse_date(end)
+        start_date = parse_date(start)
+        end_date = parse_date(end)
         
         # Try to get IBGE code if not provided
         if not ibge_code:
-            ibge_code = self._get_ibge_code(shapefile_path)
+            ibge_code = get_ibge_code(shapefile_path)
 
         stations = []
         
@@ -118,13 +119,13 @@ class INMETDownloader:
         if not stations:
             LOGGER.info("No station found by IBGE code. Falling back to nearest stations.")
             # Get centroid
-            lat, lon = self._centroid_from_shapefile(shapefile_path)
+            lat, lon = centroid_from_shapefile(shapefile_path)
             stations = self._find_nearest_stations(lat, lon, n=5)
 
         # 3. If we found stations by IBGE, still add nearest as fallback candidates
         if stations:
             try:
-                lat, lon = self._centroid_from_shapefile(shapefile_path)
+                lat, lon = centroid_from_shapefile(shapefile_path)
                 stations.extend(self._find_nearest_stations(lat, lon, n=10))
             except Exception:
                 pass
@@ -208,11 +209,11 @@ class INMETDownloader:
         if ibge_code:
             daily_df.insert(0, 'codigo_ibge', ibge_code)
         else:
-            inferred_ibge = self._get_ibge_code(shapefile_path)
+            inferred_ibge = get_ibge_code(shapefile_path)
             if inferred_ibge:
                 daily_df.insert(0, 'codigo_ibge', inferred_ibge)
             else:
-                lat, lon = self._centroid_from_shapefile(shapefile_path)
+                lat, lon = centroid_from_shapefile(shapefile_path)
                 daily_df['lat'] = lat
                 daily_df['lon'] = lon
 
@@ -616,49 +617,7 @@ class INMETDownloader:
         weekly['date'] = pd.to_datetime(weekly['date'], errors='coerce').dt.normalize()
         return weekly
 
-    @staticmethod
-    def _parse_date(s: str) -> date:
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(s, fmt).date()
-            except ValueError:
-                pass
-        raise ValueError(f"Invalid date format: {s}. Use DD/MM/YYYY or YYYY-MM-DD")
 
-    @staticmethod
-    def _centroid_from_shapefile(shp_path: str) -> Tuple[float, float]:
-        if gpd is None:
-            raise RuntimeError("geopandas is not installed.")
-        gdf = gpd.read_file(shp_path)
-        try:
-            union_geom = gdf.union_all()
-        except AttributeError:
-            union_geom = gdf.unary_union
-        centroid = union_geom.centroid
-        return float(centroid.y), float(centroid.x)
-
-    def _get_ibge_code(self, shapefile_path: str) -> Optional[int]:
-        if gpd is not None:
-            try:
-                gdf = gpd.read_file(shapefile_path)
-                for col in ['code_muni', 'CD_MUN', 'CD_GEOCMU']:
-                    if col in gdf.columns:
-                        return int(gdf[col].iloc[0])
-            except Exception as e:
-                LOGGER.warning(f"Could not read shapefile for IBGE code: {e}")
-        
-        try:
-            directory = os.path.dirname(shapefile_path)
-            for f in os.listdir(directory):
-                if f.endswith('_ibge.csv'):
-                    path = os.path.join(directory, f)
-                    df = pd.read_csv(path)
-                    if 'codigo_ibge' in df.columns:
-                        return int(df['codigo_ibge'].iloc[0])
-        except Exception as e:
-            LOGGER.warning(f"Could not read IBGE CSV: {e}")
-            
-        return None
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)

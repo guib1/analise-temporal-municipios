@@ -10,6 +10,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
+from src.utils.geo import parse_date, format_ddmmyyyy, get_ibge_code_str
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,62 +47,18 @@ INMET_OUTPUT_COLUMNS = [
 
 
 def _parse_any_date(value: str) -> date:
-	value = value.strip()
-	# Accept YYYY-MM-DD or DD/MM/YYYY
-	for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
-		try:
-			return datetime.strptime(value, fmt).date()
-		except ValueError:
-			continue
-	# pandas fallback (handles other ISO forms)
-	dt = pd.to_datetime(value, errors="raise")
-	return dt.date()
+	"""Alias kept for backward compatibility within this module."""
+	return parse_date(value)
 
 
 def _format_ddmmyyyy(value: str | date) -> str:
-	dt = _parse_any_date(value) if isinstance(value, str) else value
-	return dt.strftime("%d/%m/%Y")
-
-
-def _read_ibge_from_sidecar_csv(shp: Path) -> Optional[str]:
-	directory = shp.parent
-	for csv_file in sorted(directory.glob("*_ibge.csv")):
-		try:
-			df = pd.read_csv(csv_file)
-		except Exception:
-			continue
-		for col in ("codigo_ibge", "cod_ibge", "COD_IBGE", "CD_MUN", "CD_GEOCMU"):
-			if col in df.columns and not df.empty:
-				try:
-					return str(int(df[col].iloc[0])).zfill(7)
-				except Exception:
-					continue
-	return None
-
-
-def _read_ibge_from_shapefile(shp: Path) -> Optional[str]:
-	try:
-		import geopandas as gpd  # type: ignore
-	except Exception:
-		return None
-	try:
-		gdf = gpd.read_file(shp)
-	except Exception:
-		return None
-	for col in ("code_muni", "CD_MUN", "CD_GEOCMU", "codigo_ibge", "COD_IBGE"):
-		if col in gdf.columns and len(gdf) > 0:
-			try:
-				return str(int(gdf[col].iloc[0])).zfill(7)
-			except Exception:
-				continue
-	return None
+	"""Alias kept for backward compatibility within this module."""
+	return format_ddmmyyyy(value)
 
 
 def infer_codibge(shapefile_path: Path) -> Optional[str]:
-	code = _read_ibge_from_sidecar_csv(shapefile_path)
-	if code:
-		return code
-	return _read_ibge_from_shapefile(shapefile_path)
+	"""Return the zero-padded 7-digit IBGE code for a shapefile."""
+	return get_ibge_code_str(shapefile_path)
 
 
 def discover_shapefiles(shapefiles_dir: Path) -> List[ShapefileTarget]:

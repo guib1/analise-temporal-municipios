@@ -10,6 +10,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
+from src.utils.geo import parse_date
+
 # Carrega variáveis de ambiente
 load_dotenv()
 
@@ -66,8 +68,8 @@ class ModisDownloader:
         geojson = json.loads(gdf.to_json())
         
         # Formatar datas (MM-DD-YYYY)
-        start_dt = datetime.strptime(start_date, "%d/%m/%Y").strftime("%m-%d-%Y")
-        end_dt = datetime.strptime(end_date, "%d/%m/%Y").strftime("%m-%d-%Y")
+        start_dt = parse_date(start_date).strftime("%m-%d-%Y")
+        end_dt = parse_date(end_date).strftime("%m-%d-%Y")
         
         task = {
             "task_type": "area",

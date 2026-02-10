@@ -12,14 +12,15 @@ import zipfile
 import shutil
 from dotenv import load_dotenv
 
+from src.utils.geo import (
+    parse_date,
+    centroid_from_shapefile,
+    bbox_from_shapefile,
+    get_ibge_code,
+)
+
 # Load environment variables from .env file
 load_dotenv()
-
-try:
-    import geopandas as gpd
-    from shapely.geometry import Point
-except ImportError:
-    gpd = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -61,8 +62,8 @@ class ERA5Downloader:
         Returns:
             A pandas DataFrame with the daily aggregated data.
         """
-        start_date = self._parse_date(start)
-        end_date = self._parse_date(end)
+        start_date = parse_date(start)
+        end_date = parse_date(end)
         if end_date < start_date:
             raise ValueError('end date must be after start date')
 
@@ -72,8 +73,8 @@ class ERA5Downloader:
         if variables is None:
             variables = ['surface_net_solar_radiation', 'surface_net_thermal_radiation', 'boundary_layer_height']
 
-        bbox = self._bbox_from_shapefile(shapefile_path)
-        ibge_code = self._get_ibge_code(shapefile_path)
+        bbox = bbox_from_shapefile(shapefile_path)
+        ibge_code = get_ibge_code(shapefile_path)
 
         if cds_padding_deg > 0:
             bbox = [
@@ -85,7 +86,7 @@ class ERA5Downloader:
 
         coords = None
         if not use_bbox:
-            centroid = self._centroid_from_shapefile(shapefile_path)
+            centroid = centroid_from_shapefile(shapefile_path)
             coords = [centroid]
             LOGGER.info(f'Using centroid as representative point: lat={centroid[0]}, lon={centroid[1]}')
         else:
@@ -230,30 +231,7 @@ class ERA5Downloader:
             raise
         LOGGER.info("Download complete -> %s", output_nc)
 
-    def _get_ibge_code(self, shapefile_path: str) -> Optional[int]:
-        if gpd is not None:
-            try:
-                gdf = gpd.read_file(shapefile_path)
-                # Check for common column names for IBGE code
-                for col in ['code_muni', 'CD_MUN', 'CD_GEOCMU']:
-                    if col in gdf.columns:
-                        return int(gdf[col].iloc[0])
-            except Exception as e:
-                LOGGER.warning(f"Could not read shapefile for IBGE code: {e}")
-        
-        # Fallback: look for CSV in the same directory
-        try:
-            directory = os.path.dirname(shapefile_path)
-            for f in os.listdir(directory):
-                if f.endswith('_ibge.csv'):
-                    path = os.path.join(directory, f)
-                    df = pd.read_csv(path)
-                    if 'codigo_ibge' in df.columns:
-                        return int(df['codigo_ibge'].iloc[0])
-        except Exception as e:
-            LOGGER.warning(f"Could not read IBGE CSV: {e}")
-            
-        return None
+
 
     def _process_nc_to_daily_csv(
         self,
@@ -391,15 +369,6 @@ class ERA5Downloader:
 
 
     @staticmethod
-    def _parse_date(s: str) -> date:
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(s, fmt).date()
-            except ValueError:
-                pass
-        raise ValueError(f"Invalid date format: {s}. Use DD/MM/YYYY or YYYY-MM-DD")
-
-    @staticmethod
     def _iter_months(start_date: date, end_date: date):
         current = start_date.replace(day=1)
         while current <= end_date:
@@ -419,26 +388,6 @@ class ERA5Downloader:
             if start_date <= date_obj <= end_date:
                 days.append(f"{d:02d}")
         return days
-
-    @staticmethod
-    def _bbox_from_shapefile(shp_path: str) -> List[float]:
-        if gpd is None:
-            raise RuntimeError("geopandas is not installed; please install it to use shapefiles.")
-        gdf = gpd.read_file(shp_path)
-        minx, miny, maxx, maxy = gdf.total_bounds
-        return [float(maxy), float(minx), float(miny), float(maxx)]
-
-    @staticmethod
-    def _centroid_from_shapefile(shp_path: str) -> Tuple[float, float]:
-        if gpd is None:
-            raise RuntimeError("geopandas is not installed; please install it to use shapefiles.")
-        gdf = gpd.read_file(shp_path)
-        try:
-            union_geom = gdf.union_all()
-        except AttributeError:
-            union_geom = gdf.unary_union
-        centroid = union_geom.centroid
-        return float(centroid.y), float(centroid.x)
 
 
 if __name__ == '__main__':
