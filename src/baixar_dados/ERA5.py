@@ -11,6 +11,15 @@ import numpy as np
 import zipfile
 import shutil
 from dotenv import load_dotenv
+from pathlib import Path
+import sys
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+print(f"DEBUG: Added {PROJECT_ROOT} to sys.path")
 
 from src.utils.geo import (
     parse_date,
@@ -155,7 +164,10 @@ class ERA5Downloader:
         if not self.cds_url or not self.cds_key:
             LOGGER.error("CDSAPI_URL and/or CDSAPI_KEY not found in environment variables.")
             LOGGER.error("Please ensure you have a .env file with these variables defined.")
-            raise ValueError("Missing CDS API credentials in .env file.")
+            raise ValueError(
+                "Missing CDS API credentials in .env file. "
+                "Please define CDSAPI_URL and CDSAPI_KEY."
+            )
 
         try:
             c = cdsapi.Client(url=self.cds_url, key=self.cds_key)
@@ -181,6 +193,10 @@ class ERA5Downloader:
             temp_download = output_nc + ".download"
             c.retrieve('reanalysis-era5-single-levels', req, temp_download)
             
+            # Check if download actually happened
+            if not os.path.exists(temp_download):
+                 raise RuntimeError(f"CDS API finished but file was not created: {temp_download}")
+
             # Check if it is a zip file
             if zipfile.is_zipfile(temp_download):
                 LOGGER.info("CDS returned a ZIP file. Extracting...")
@@ -202,6 +218,8 @@ class ERA5Downloader:
                         raise RuntimeError("No .nc files found in the downloaded ZIP.")
                     
                     if len(extracted_files) == 1:
+                        if os.path.exists(output_nc):
+                             os.remove(output_nc)
                         shutil.move(extracted_files[0], output_nc)
                     else:
                         # If multiple files, we might need to merge them, but usually CDS returns one per request structure
@@ -219,6 +237,8 @@ class ERA5Downloader:
                     shutil.rmtree(extract_dir)
             else:
                 # It's likely a NetCDF file already
+                if os.path.exists(output_nc):
+                     os.remove(output_nc)
                 shutil.move(temp_download, output_nc)
                 
             if os.path.exists(temp_download):
@@ -400,7 +420,7 @@ if __name__ == '__main__':
         df_result = downloader.fetch_daily_data(
             shapefile_path='data/shapefiles/SP-São_Paulo/SP_São_Paulo.shp',
             start='2000-01-01',
-            end='2000-02-01',
+            end='2000-01-31',
             out_nc='data/output/era5/sao_paulo_era5.nc',
             out_csv='data/output/era5/daily_sao_paulo_2000.csv',
             use_bbox=False, # Use centroid by default

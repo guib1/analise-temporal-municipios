@@ -263,313 +263,318 @@ def _write_source_csv(
 	return df_out
 
 
-def run_all_for_target(
-	target: ShapefileTarget,
-	*,
-	start: date,
-	end: date,
-	output_dir: Path,
-	cache_dir: Path,
-	disease: str = "asma",
-) -> Tuple[str, Dict[str, Path], pd.DataFrame]:
-	shp = target.shapefile_path
-	codibge = target.codibge or shp.stem
-	codibge_norm = str(codibge).zfill(7) if str(codibge).isdigit() else str(codibge)
-	disease_norm = str(disease).strip().lower()
-	if disease_norm not in SUPPORTED_DISEASES:
-		raise ValueError(f"Doença não suportada: {disease!r}. Suportadas: {', '.join(SUPPORTED_DISEASES)}")
 
-	outputs: Dict[str, Path] = {}
-	frames: Dict[str, pd.DataFrame] = {}
+import concurrent.futures
+import traceback
 
-	# Ensure directories
-	(output_dir / "cetesb").mkdir(parents=True, exist_ok=True)
-	(output_dir / "inmet").mkdir(parents=True, exist_ok=True)
-	(output_dir / "era5").mkdir(parents=True, exist_ok=True)
-	(output_dir / "merra2").mkdir(parents=True, exist_ok=True)
-	(output_dir / "tropomi").mkdir(parents=True, exist_ok=True)
-	(output_dir / "modis").mkdir(parents=True, exist_ok=True)
-	(output_dir / "diversos").mkdir(parents=True, exist_ok=True)
-	(output_dir / "datasus").mkdir(parents=True, exist_ok=True)
+class DownloadOrchestrator:
+	def __init__(self, max_workers: int = 3):
+		self.max_workers = max_workers
+		# Mapping: key -> (module_name, file_name, class_name, method_name, expects_out_csv_arg)
+		# We'll handle arguments dynamically based on the key
+		pass
 
-	# CETESB (requires SP)
-	try:
-		mod = _load_module_from_path("CETESB_module", HERE / "CETESB.py")
-
-		out_csv = output_dir / "cetesb" / f"cetesb_{codibge_norm}.csv"
-		df_raw = mod.CETESBDownloader().fetch_data(
-			shapefile_path=str(shp),
-			start_date=_format_ddmmyyyy(start),
-			end_date=_format_ddmmyyyy(end),
-			output_csv=str(out_csv),
-		)
-		outputs["cetesb"] = out_csv
-		frames["cetesb"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="cetesb",
-			start=start,
-			end=end,
-		)
-	except Exception as exc:
-		LOGGER.warning("CETESB falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "cetesb" / f"cetesb_{codibge_norm}.csv"
-		outputs["cetesb"] = out_csv
-		frames["cetesb"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="cetesb",
-			start=start,
-			end=end,
-		)
-
-	# INMET
-	try:
-		mod = _load_module_from_path("INMET_module", HERE / "INMET.py")
-
-		out_csv = output_dir / "inmet" / f"inmet_{codibge_norm}.csv"
-		df_raw = mod.INMETDownloader().fetch_daily_data(
-			shapefile_path=str(shp),
-			start=str(start),
-			end=str(end),
-			out_csv=str(out_csv),
-		)
-		outputs["inmet"] = out_csv
-		frames["inmet"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="inmet",
-			start=start,
-			end=end,
-			expected_columns=INMET_OUTPUT_COLUMNS,
-		)
-	except Exception as exc:
-		LOGGER.warning("INMET falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "inmet" / f"inmet_{codibge_norm}.csv"
-		outputs["inmet"] = out_csv
-		frames["inmet"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="inmet",
-			start=start,
-			end=end,
-			expected_columns=INMET_OUTPUT_COLUMNS,
-		)
-
-	# ERA5
-	try:
-		mod = _load_module_from_path("ERA5_module", HERE / "ERA5.py")
-
-		out_csv = output_dir / "era5" / f"era5_{codibge_norm}.csv"
-		out_nc = output_dir / "era5" / f"temp_era5_{codibge_norm}.nc"
-		df_raw = mod.ERA5Downloader().fetch_daily_data(
-			shapefile_path=str(shp),
-			start=str(start),
-			end=str(end),
-			out_nc=str(out_nc),
-			out_csv=str(out_csv),
-		)
-		outputs["era5"] = out_csv
-		frames["era5"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="era5",
-			start=start,
-			end=end,
-		)
-	except Exception as exc:
-		LOGGER.warning("ERA5 falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "era5" / f"era5_{codibge_norm}.csv"
-		outputs["era5"] = out_csv
-		frames["era5"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="era5",
-			start=start,
-			end=end,
-		)
-
-	# MERRA2
-	try:
-		mod = _load_module_from_path("MERRA2_module", HERE / "MERRA2.py")
-
-		out_csv = output_dir / "merra2" / f"merra2_{codibge_norm}.csv"
-		df_raw = mod.MERRA2Downloader().fetch_daily_data(
-			shapefile_path=str(shp),
-			start=str(start),
-			end=str(end),
-			out_csv=str(out_csv),
-		)
-		outputs["merra2"] = out_csv
-		frames["merra2"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="merra2",
-			start=start,
-			end=end,
-		)
-	except Exception as exc:
-		LOGGER.warning("MERRA2 falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "merra2" / f"merra2_{codibge_norm}.csv"
-		outputs["merra2"] = out_csv
-		frames["merra2"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="merra2",
-			start=start,
-			end=end,
-		)
-
-	# TROPOMI (expects DD/MM/YYYY)
-	try:
-		mod = _load_module_from_path("TROPOMI_module", HERE / "TROPOMI.py")
-
-		out_csv = output_dir / "tropomi" / f"tropomi_{codibge_norm}.csv"
-		cache_subdir = cache_dir / "tropomi" / codibge_norm
+	def _run_scraper(self, key: str, target: ShapefileTarget, start: date, end: date, output_dir: Path, cache_dir: Path, disease: str, context: dict = None) -> pd.DataFrame:
+		"""
+		Executa um scraper específico de forma isolada e segura.
+		Retorna o DataFrame resultante (ou vazio em caso de erro).
+		"""
+		shp = target.shapefile_path
+		codibge = target.codibge or shp.stem
+		codibge_norm = str(codibge).zfill(7) if str(codibge).isdigit() else str(codibge)
+		
+		# Define paths
+		out_csv = output_dir / key / f"{key}_{codibge_norm}.csv"
+		cache_subdir = cache_dir / key / codibge_norm
+		
+		# Ensure dirs
+		out_csv.parent.mkdir(parents=True, exist_ok=True)
 		cache_subdir.mkdir(parents=True, exist_ok=True)
-		df_raw = mod.TropomiDownloader().fetch_data(
-			shapefile_path=str(shp),
-			start_date=_format_ddmmyyyy(start),
-			end_date=_format_ddmmyyyy(end),
-			output_csv=str(out_csv),
-			cache_dir=str(cache_subdir),
-		)
-		outputs["tropomi"] = out_csv
-		frames["tropomi"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="tropomi",
-			start=start,
-			end=end,
-		)
-	except Exception as exc:
-		LOGGER.warning("TROPOMI falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "tropomi" / f"tropomi_{codibge_norm}.csv"
-		outputs["tropomi"] = out_csv
-		frames["tropomi"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="tropomi",
-			start=start,
-			end=end,
-		)
 
-	# MODIS (expects DD/MM/YYYY)
-	try:
-		mod = _load_module_from_path("MODIS_module", HERE / "MODIS.py")
-
-		out_csv = output_dir / "modis" / f"modis_{codibge_norm}.csv"
-		df_raw = mod.ModisDownloader().fetch_data(
-			shapefile_path=str(shp),
-			start_date=_format_ddmmyyyy(start),
-			end_date=_format_ddmmyyyy(end),
-			output_csv=str(out_csv),
-		)
-		outputs["modis"] = out_csv
-		frames["modis"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="modis",
-			start=start,
-			end=end,
-		)
-	except Exception as exc:
-		LOGGER.warning("MODIS falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "modis" / f"modis_{codibge_norm}.csv"
-		outputs["modis"] = out_csv
-		frames["modis"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="modis",
-			start=start,
-			end=end,
-		)
-
-	if str(codibge_norm).isdigit():
+		LOGGER.info(f"[{key.upper()}] Iniciando para {codibge_norm}...")
+		
 		try:
-			mod = _load_module_from_path("DATASUS_module", HERE / "DATASUS.py")
-
-			out_csv = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
-			if disease_norm == "asma":
-				df_raw = mod.DataSUSDownloader().fetch_sih_asthma_daily(
-					cod_ibge=codibge_norm,
-					start=start,
-					end=end,
-					output_csv=out_csv,
+			df = pd.DataFrame()
+			
+			# Dispatch logic based on key
+			if key == "cetesb":
+				mod = _load_module_from_path("CETESB_module", HERE / "CETESB.py")
+				df = mod.CETESBDownloader().fetch_data(
+					shapefile_path=str(shp),
+					start_date=_format_ddmmyyyy(start),
+					end_date=_format_ddmmyyyy(end),
+					output_csv=str(out_csv)
 				)
-			else:  # pragma: no cover - guarded by SUPPORTED_DISEASES
-				raise ValueError(f"Doença não suportada: {disease_norm!r}")
-			outputs["datasus"] = out_csv
-			frames["datasus"] = _write_source_csv(
-				df=df_raw,
-				out_csv=Path(out_csv),
+			
+			elif key == "inmet":
+				mod = _load_module_from_path("INMET_module", HERE / "INMET.py")
+				df = mod.INMETDownloader().fetch_daily_data(
+					shapefile_path=str(shp),
+					start=str(start),
+					end=str(end),
+					out_csv=str(out_csv)
+				)
+				# INMET scraper returns None sometimes, but writes file. Reload if needed.
+				if df is None and out_csv.exists():
+				    df = pd.read_csv(out_csv)
+			
+			elif key == "era5":
+				mod = _load_module_from_path("ERA5_module", HERE / "ERA5.py")
+				out_nc = cache_subdir / f"temp_era5_{codibge_norm}.nc"
+				df = mod.ERA5Downloader().fetch_daily_data(
+					shapefile_path=str(shp),
+					start=str(start),
+					end=str(end),
+					out_nc=str(out_nc),
+					out_csv=str(out_csv)
+				)
+				# Cleanup NetCDF
+				if out_nc.exists():
+					try:
+						out_nc.unlink()
+					except Exception:
+						pass
+
+			elif key == "merra2":
+				mod = _load_module_from_path("MERRA2_module", HERE / "MERRA2.py")
+				df = mod.MERRA2Downloader().fetch_daily_data(
+					shapefile_path=str(shp),
+					start=str(start),
+					end=str(end),
+					out_csv=str(out_csv)
+				)
+
+			elif key == "tropomi":
+				mod = _load_module_from_path("TROPOMI_module", HERE / "TROPOMI.py")
+				df = mod.TropomiDownloader().fetch_data(
+					shapefile_path=str(shp),
+					start_date=_format_ddmmyyyy(start),
+					end_date=_format_ddmmyyyy(end),
+					output_csv=str(out_csv),
+					cache_dir=str(cache_subdir)
+				)
+			
+			elif key == "modis":
+				mod = _load_module_from_path("MODIS_module", HERE / "MODIS.py")
+				df = mod.ModisDownloader().fetch_data(
+					shapefile_path=str(shp),
+					start_date=_format_ddmmyyyy(start),
+					end_date=_format_ddmmyyyy(end),
+					output_csv=str(out_csv),
+					cache_dir=str(cache_subdir)
+				)
+
+			elif key == "omi":
+				mod = _load_module_from_path("OMI_module", HERE / "OMI.py")
+				df = mod.OMIDownloader().fetch_data(
+					shapefile_path=str(shp),
+					start_date=_format_ddmmyyyy(start),
+					end_date=_format_ddmmyyyy(end),
+					output_csv=str(out_csv),
+					cache_dir=str(cache_subdir)
+				)
+
+			elif key == "datasus":
+				if not str(codibge_norm).isdigit():
+					LOGGER.warning(f"[{key.upper()}] Pular: código IBGE inválido {codibge_norm}")
+					return pd.DataFrame()
+					
+				mod = _load_module_from_path("DATASUS_module", HERE / "DATASUS.py")
+				disease_norm = disease.strip().lower()
+				# Special filename for DATASUS
+				out_csv = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
+				
+				if disease_norm == "asma":
+					df = mod.DataSUSDownloader().fetch_sih_asthma_daily(
+						cod_ibge=codibge_norm,
+						start=start,
+						end=end,
+						output_csv=out_csv
+					)
+				else:
+					raise ValueError(f"Doença não suportada: {disease}")
+
+			elif key == "indices":
+				# Dependente do INMET
+				inmet_df = context.get("inmet", pd.DataFrame())
+				if inmet_df.empty and (output_dir / "inmet" / f"inmet_{codibge_norm}.csv").exists():
+					try:
+						inmet_df = pd.read_csv(output_dir / "inmet" / f"inmet_{codibge_norm}.csv")
+					except:
+						pass
+				
+				# Load module (filename is still INDICE-CALCULADO.py)
+				mod = _load_module_from_path("INDICE_CALCULADO_module", HERE / "INDICE-CALCULADO.py")
+				
+				# Output file: indices_{codibge}.csv
+				out_csv = output_dir / "indices" / f"indices_{codibge_norm}.csv"
+				
+				df = mod.DiversosDownloader().fetch_data(
+					shapefile_path=str(shp),
+					start_date=_format_ddmmyyyy(start),
+					end_date=_format_ddmmyyyy(end),
+					output_csv=str(out_csv),
+					inmet_df=inmet_df
+				)
+
+			else:
+				LOGGER.error(f"Scraper desconhecido: {key}")
+				return pd.DataFrame()
+
+			# Standardization and saving
+			expected_cols = INMET_OUTPUT_COLUMNS if key == "inmet" else None
+			return _write_source_csv(
+				df=df,
+				out_csv=out_csv,
 				codigo_ibge=codibge_norm,
-				source="datasus",
+				source=key,
 				start=start,
 				end=end,
+				expected_columns=expected_cols
 			)
+
 		except Exception as exc:
-			LOGGER.warning("DATASUS falhou para %s (%s): %s", shp, codibge_norm, exc)
-			out_csv = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
-			outputs["datasus"] = out_csv
-			frames["datasus"] = _write_source_csv(
+			LOGGER.error(f"[{key.upper()}] Erro ao processar {codibge_norm}: {exc}")
+			LOGGER.debug(traceback.format_exc())
+			
+			# Ensure empty file is written to avoid pipeline breakage
+			return _write_source_csv(
 				df=pd.DataFrame(),
 				out_csv=out_csv,
 				codigo_ibge=codibge_norm,
-				source="datasus",
+				source=key,
 				start=start,
 				end=end,
+				expected_columns=INMET_OUTPUT_COLUMNS if key == "inmet" else None
 			)
 
-	# Diversos / INDICE-CALCULADO (precisa rodar por último)
-	try:
-		diversos_path = HERE / "INDICE-CALCULADO.py"
-		mod = _load_module_from_path("indice_calculado", diversos_path)
-		out_csv = output_dir / "diversos" / f"diversos_{codibge_norm}.csv"
-		inmet_df = frames.get("inmet", pd.DataFrame())
-		df_raw = mod.DiversosDownloader().fetch_data(
-			shapefile_path=str(shp),
-			start_date=_format_ddmmyyyy(start),
-			end_date=_format_ddmmyyyy(end),
-			output_csv=str(out_csv),
-			inmet_df=inmet_df,
-		)
-		outputs["diversos"] = out_csv
-		frames["diversos"] = _write_source_csv(
-			df=df_raw,
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="diversos",
-			start=start,
-			end=end,
-		)
-	except Exception as exc:
-		LOGGER.warning("DIVERSOS falhou para %s: %s", shp, exc)
-		out_csv = output_dir / "diversos" / f"diversos_{codibge_norm}.csv"
-		outputs["diversos"] = out_csv
-		frames["diversos"] = _write_source_csv(
-			df=pd.DataFrame(),
-			out_csv=out_csv,
-			codigo_ibge=codibge_norm,
-			source="diversos",
-			start=start,
-			end=end,
-		)
+	def process_municipio(
+		self,
+		target: ShapefileTarget,
+		start: date,
+		end: date,
+		output_dir: Path,
+		cache_dir: Path,
+		disease: str
+	) -> Tuple[str, Dict[str, Path], pd.DataFrame]:
+		"""Orquestra o download paralelo para um único município."""
+		
+		LOGGER.info("=== Processando Município: %s ===", target.shapefile_path.stem)
+		codibge = target.codibge
+		shapefile_path = target.shapefile_path
+		
+		# Tentar carregar código IBGE autoritativo do arquivo CSV auxiliar
+		# Ex: SP_São_Paulo_ibge.csv na mesma pasta do shapefile
+		auth_codibge = codibge
+		ibge_csv = shapefile_path.parent / f"{shapefile_path.stem}_ibge.csv"
+		if ibge_csv.exists():
+			try:
+				idf = pd.read_csv(ibge_csv, dtype=str)
+				if not idf.empty:
+					 # Pega a primeira coluna (assumindo que seja o codigo)
+					auth_codibge = idf.iloc[0, 0]
+					LOGGER.info(f"Código IBGE autoritativo carregado de {ibge_csv.name}: {auth_codibge}")
+			except Exception as e:
+				LOGGER.warning(f"Erro ao ler {ibge_csv.name}: {e}")
+		
+		codibge_norm = str(auth_codibge).zfill(7) if str(auth_codibge).isdigit() else str(auth_codibge)
 
-	combined = _merge_sources(codibge_norm, start, end, frames)
-	return codibge_norm, outputs, combined
+		outputs = {}
+		frames = {}
+		
+		# Tier 1: Independent Tasks
+		# INMET is in Tier 1 but required for Tier 2
+		tier1_keys = ["cetesb", "inmet", "era5", "merra2", "tropomi", "modis", "omi", "datasus"]
+		
+		# TQDM for visualization (auto-detects notebook/console)
+		try:
+			from tqdm.auto import tqdm
+			USE_TQDM = True
+		except ImportError:
+			USE_TQDM = False
+
+		progress_bars = {}
+		if USE_TQDM:
+			print(f"\nIniciando downloads paralelos para {codibge_norm} ({len(tier1_keys)} fontes)...")
+			# Create bars in fixed order so they don't jump around
+			for i, key in enumerate(tier1_keys):
+				# Indeterminate bar since we don't know exact chunks yet
+				progress_bars[key] = tqdm(total=1, desc=f"[{key.upper()}] Aguardando", position=i, leave=True)
+
+		with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+			future_to_key = {}
+			for key in tier1_keys:
+				if USE_TQDM:
+					progress_bars[key].set_description(f"[{key.upper()}] Processando...")
+				
+				future = executor.submit(self._run_scraper, key, target, start, end, output_dir, cache_dir, disease)
+				future_to_key[future] = key
+			
+			for future in concurrent.futures.as_completed(future_to_key):
+				key = future_to_key[future]
+				try:
+					df_res = future.result()
+					frames[key] = df_res
+					
+					# Determine output path logic (simplified)
+					shp = target.shapefile_path
+					codibge = target.codibge or shp.stem
+					codibge_norm = str(codibge).zfill(7) if str(codibge).isdigit() else str(codibge)
+					
+					if key == "datasus":
+						disease_norm = disease.strip().lower()
+						outputs[key] = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
+					else:
+						outputs[key] = output_dir / key / f"{key}_{codibge_norm}.csv"
+						
+					msg = f"[{key.upper()}] Finalizado."
+					LOGGER.info(msg)
+					
+					if USE_TQDM:
+						progress_bars[key].set_description(f"[{key.upper()}] Concluído")
+						progress_bars[key].update(1)
+						progress_bars[key].close()
+
+				except Exception as exc:
+					err_msg = f"[{key.upper()}] Falha: {exc}"
+					LOGGER.error(err_msg)
+					if USE_TQDM:
+						progress_bars[key].set_description(f"[{key.upper()}] Erro")
+						progress_bars[key].close()
+		
+		# Tier 2: Dependent Tasks (Indices Calculados need INMET)
+		# We run this sequentially after Tier 1 to ensure INMET is ready
+		LOGGER.info("[INDICES] Iniciando cálculo de índices (depende do INMET)...")
+		frames["indices"] = self._run_scraper(
+			"indices", target, start, end, output_dir, cache_dir, disease, context={"inmet": frames.get("inmet")}
+		)
+		
+		# Merge all
+		shp = target.shapefile_path
+		
+		# Use authoritative codibge if found, else target
+		final_cod = auth_codibge if auth_codibge else (target.codibge or shp.stem)
+		codibge_norm = str(final_cod).zfill(7) if str(final_cod).isdigit() else str(final_cod)
+		
+		# Enrich frames with authoritative IBGE code BEFORE merge/dedupe
+		for k, df_frame in frames.items():
+			if df_frame is not None and not df_frame.empty:
+				df_frame["codigo_ibge"] = codibge_norm
+		
+		combined = _merge_sources(codibge_norm, start, end, frames)
+		
+		# Limpeza de Cache (Cleanup)
+		# Se tudo correu bem e cache_subdir foi definido, apagamos o cache deste município
+		try:
+			if 'cache_subdir' in locals() and cache_subdir.exists():
+				import shutil
+				shutil.rmtree(cache_subdir)
+				LOGGER.info(f"Cache limpo com sucesso: {cache_subdir}")
+		except Exception as e:
+			if 'cache_subdir' in locals():
+				LOGGER.warning(f"Não foi possível limpar o cache {cache_subdir}: {e}")
+
+		return codibge_norm, outputs, combined
 
 
 def download_all(
@@ -588,41 +593,12 @@ def download_all(
 	final_schema: str = "reference",
 	schema_csv: str | Path | None = None,
 	log_level: str = "INFO",
+	max_workers: int = 3
 ) -> pd.DataFrame:
 	"""
 	Orquestra o download/processamento de todas as fontes para um ou mais municípios.
-
-	Parâmetros principais
-	--------------------
-	start, end:
-		Datas (YYYY-MM-DD, DD/MM/YYYY, ou datetime.date).
-	disease:
-		Doença para o módulo DataSUS (por enquanto apenas 'asma').
-	shapefile:
-		Se informado, processa apenas este shapefile.
-	shapefiles:
-		Lista de shapefiles. Se informado, tem prioridade sobre shapefiles_dir.
-	shapefiles_dir:
-		Diretório raiz para buscar *.shp recursivamente.
-	output_dir:
-		Diretório base onde serão salvos os CSVs por fonte e os finais.
-	cache_dir:
-		Diretório de cache usado (por ex. TROPOMI por município).
-	final_csv:
-		Caminho do CSV final unificado (codibge+date).
-	final_schema:
-		"all" para todas as colunas unificadas,
-		"inmet" para forçar o schema/ordem do INMET,
-		"reference" para forçar o schema/ordem a partir de `schema_csv`.
-	schema_csv:
-		Caminho de um CSV de referência (somente o header é usado) para definir colunas e ordem.
-
-	Retorna
-	-------
-	pandas.DataFrame
-		DataFrame final unificado (codibge+date).
 	"""
-	# Configure logging only if the host app hasn't configured it yet.
+	# Configure logging 
 	root_logger = logging.getLogger()
 	if not root_logger.handlers:
 		logging.basicConfig(
@@ -642,6 +618,7 @@ def download_all(
 	cache_dir_path.mkdir(parents=True, exist_ok=True)
 	final_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
+	# Schema validation
 	final_schema_norm = str(final_schema).strip().lower()
 	if final_schema_norm not in {"all", "inmet", "reference"}:
 		raise ValueError("final_schema must be 'all', 'inmet', or 'reference'")
@@ -662,16 +639,22 @@ def download_all(
 		shp_path = Path(shapefile)
 		targets.append(ShapefileTarget(shapefile_path=shp_path, codibge=infer_codibge(shp_path)))
 	else:
-		targets = discover_shapefiles(Path(shapefiles_dir))
+		root = Path(shapefiles_dir)
+		if root.exists():
+			targets = discover_shapefiles(root)
+		else:
+			LOGGER.warning(f"Diretório de shapefiles não encontrado: {root}")
 
 	if not targets:
 		LOGGER.warning("Nenhum shapefile encontrado para processar.")
 		return pd.DataFrame()
 
+	orchestrator = DownloadOrchestrator(max_workers=max_workers)
 	all_frames: List[pd.DataFrame] = []
+	
 	for target in targets:
-		LOGGER.info("Processando %s", target.shapefile_path)
-		codibge, _outputs, combined = run_all_for_target(
+		LOGGER.info("=== Processando Município: %s ===", target.shapefile_path.stem)
+		codibge, _outputs, combined = orchestrator.process_municipio(
 			target,
 			start=start_date,
 			end=end_date,
@@ -679,49 +662,96 @@ def download_all(
 			cache_dir=cache_dir_path,
 			disease=disease,
 		)
-		combined_internal = combined
-		combined_out = combined_internal
+		
+		# Schema application per municipality
 		if final_schema_norm == "inmet":
-			for col in INMET_OUTPUT_COLUMNS:
-				if col not in combined_out.columns:
-					combined_out[col] = pd.NA
-			combined_out = combined_out[INMET_OUTPUT_COLUMNS]
+			combined = apply_output_schema(combined, INMET_OUTPUT_COLUMNS)
 		elif final_schema_norm == "reference" and schema_cols is not None:
-			# Only apply schema to the per-municipio CSV. We'll apply schema to df_all at the end.
-			combined_out = apply_output_schema(combined_out, schema_cols)
+			combined = apply_output_schema(combined, schema_cols)
 
 		if write_per_municipio:
 			out_per_muni = output_dir_path / "final" / "by_municipio" / f"final_{codibge}.csv"
 			out_per_muni.parent.mkdir(parents=True, exist_ok=True)
-			combined_out.to_csv(out_per_muni, index=False)
-			LOGGER.info("CSV final do município gerado -> %s", out_per_muni)
-		# Keep internal frames in a stable key for the global merge/groupby.
-		all_frames.append(combined_internal)
+			combined.to_csv(out_per_muni, index=False)
+			LOGGER.info(f"CSV final do município gerado -> {out_per_muni}")
+			
+		all_frames.append(combined)
 
+	# Global Merge
 	df_all = pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
 	if df_all.empty:
 		LOGGER.warning("Nenhum dado foi gerado.")
 		return df_all
 
-	# Groupby final (segurança contra duplicatas)
+	# Groupby final to remove duplicates
 	key = ["codigo_ibge", "date"]
 	df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.normalize()
 	df_all = df_all.dropna(subset=["date"]).reset_index(drop=True)
+	
 	numeric_cols = [c for c in df_all.columns if c not in key and pd.api.types.is_numeric_dtype(df_all[c])]
 	agg = {c: "mean" for c in numeric_cols}
-	df_all = df_all.groupby(key, as_index=False).agg(agg).sort_values(key).reset_index(drop=True)
-
-	if final_schema_norm == "inmet":
-		# Ensure INMET columns exist and are in the expected order.
-		for col in INMET_OUTPUT_COLUMNS:
-			if col not in df_all.columns:
-				df_all[col] = pd.NA
-		df_all = df_all[INMET_OUTPUT_COLUMNS]
-	elif final_schema_norm == "reference" and schema_cols is not None:
+	
+	# Only aggregate if there are duplicates and key columns exist
+	key_present = [k for k in key if k in df_all.columns]
+	if len(key_present) == len(key):
+		if df_all.duplicated(subset=key).any():
+			df_all = df_all.groupby(key, as_index=False).agg(agg).sort_values(key).reset_index(drop=True)
+	else:
+		LOGGER.warning(f"Colunas chave {key} ausentes. Pulasdo agregação de duplicatas. Colunas presentes: {list(df_all.columns)}")
+	
+	# Final Schema Check
+	if final_schema_norm == "reference" and schema_cols is not None:
+		# Note: schema_cols might not have municipio/uf if reference didn't have them.
 		df_all = apply_output_schema(df_all, schema_cols)
 
+	# Enrich with Metadata (Municipio, UF) - Done AFTER schema to ensure they are not dropped
+	try:
+		ibge_path = HERE.parent.parent / "data/utils/municipios_ibge.csv" # Adjusted path relative to src/baixar_dados
+		if not ibge_path.exists():
+             # Fallback: try absolute or other relative
+			ibge_path = Path("data/utils/municipios_ibge.csv")
+            
+		if ibge_path.exists():
+			meta = pd.read_csv(ibge_path, dtype={"codigo_ibge": str})
+			# Ensure 7 digits
+			meta["codigo_ibge"] = meta["codigo_ibge"].str.zfill(7)
+			
+            # Ensure df_all has codigo_ibge (apply_output_schema might have renamed/preserved it)
+			if "codigo_ibge" in df_all.columns:
+				df_all["codigo_ibge"] = df_all["codigo_ibge"].astype(str).str.zfill(7)
+				df_all = df_all.merge(meta[["codigo_ibge", "Nome_Município", "Nome_UF"]], on="codigo_ibge", how="left")
+				df_all = df_all.rename(columns={"Nome_Município": "municipio", "Nome_UF": "uf"})
+				
+				# Reorder: codigo_ibge, municipio, uf, date, ... rest
+				output_cols = ["codigo_ibge", "municipio", "uf", "date"]
+				# Handle case if date/codibge were missing or diff named
+				final_cols = []
+				for c in output_cols:
+					if c in df_all.columns:
+						final_cols.append(c)
+				
+				rest = [c for c in df_all.columns if c not in final_cols]
+				df_all = df_all[final_cols + rest]
+			else:
+				LOGGER.warning("Coluna 'codigo_ibge' perdida após aplicação do schema. Não foi possível enriquecer metadados.")
+
+		else:
+			LOGGER.warning(f"Metadados IBGE não encontrados em {ibge_path}. Colunas municipio/uf não serão adicionadas.")
+	except Exception as e:
+		LOGGER.warning(f"Erro ao enriquecer com metadados: {e}")
+
 	if write_final:
+		final_csv_path.parent.mkdir(parents=True, exist_ok=True)
 		df_all.to_csv(final_csv_path, index=False)
-		LOGGER.info("CSV final unificado gerado -> %s", final_csv_path)
+		
+		# Summary Report
+		n_munis = df_all["codigo_ibge"].nunique() if "codigo_ibge" in df_all.columns else 0
+		n_rows = len(df_all)
+		LOGGER.info("=" * 40)
+		LOGGER.info(f"RELATÓRIO FINAL:")
+		LOGGER.info(f"Municípios processados: {n_munis}")
+		LOGGER.info(f"Total de linhas geradas: {n_rows}")
+		LOGGER.info(f"Arquivo final unificado: {final_csv_path}")
+		LOGGER.info("=" * 40)
 
 	return df_all

@@ -1,84 +1,148 @@
-# Análise Temporal de Municípios
+# Análise Temporal de Municípios - Coleta de Dados Ambientais e de Saúde
 
-## Dependências necessárias
+Este projeto automatiza a coleta, processamento e consolidação de dados ambientais (poluentes, meteorologia) e de saúde (internações) para análise temporal em municípios brasileiros.
 
+## 🚀 Funcionalidades Principais
+
+*   **Download Paralelo**: Orquestrador inteligente que baixa dados de múltiplas fontes simultaneamente (`ThreadPoolExecutor`).
+*   **Gestão de Dependências**: Garante que índices calculados só rodem após a disponibilidade dos dados primários (ex: INMET).
+*   **Economia de Disco**: Limpeza automática de arquivos temporários pesados (NetCDF, HDF) após o processamento.
+*   **Dados Unificados**: Gera um CSV final consolidado por município e data, pronto para análise (Machine Learning/Estatística).
+
+---
+
+## 📦 Fontes de Dados
+
+| Fonte | Tipo | Variáveis Principais | Cobertura | Autenticação |
+| :--- | :--- | :--- | :--- | :--- |
+| **ERA5** | Reanálise | Vento, Temperatura, Precipitação | Global | CDS API |
+| **MERRA-2** | Reanálise | Carbono (BC/OC), SO2, O3, Aerossóis | Global | NASA Earthdata |
+| **MODIS** | Satélite | AOD (Profundidade Óptica de Aerossóis) | Global | NASA Earthdata |
+| **OMI** | Satélite | NO2, Ozônio (Coluna Total) | Global | NASA Earthdata |
+| **TROPOMI** | Satélite | NO2, Ozônio (Alta Resolução) | Global | Copernicus Data Space |
+| **INMET** | Estação | Temp, Umidade, Vento (Dados Observados) | Brasil | Aberto |
+| **CETESB** | Estação | Poluentes (PM10, O3, NO2, etc.) | SP | Qualar (Login) |
+| **DATASUS** | Saúde | Internações (SIH/RD) - Asma, etc. | Brasil | Aberto |
+
+---
+
+## 🛠️ Instalação
+
+### Pré-requisitos
 - Python 3.11
-- Compiladores/headers para Python 3.11 (ex.: `python3.11-devel` no Fedora ou `python3.11-dev` no Ubuntu/Debian)
-- `python3.11-distutils`
+- Bibliotecas em requirements.txt
 
-Instale os pacotes Python do projeto com:
-
+### Instalação das Dependências
 ```bash
 pip install -r requirements.txt
 ```
 
-## Configuração de credenciais
+---
 
-Os scripts de download utilizam variáveis de ambiente centralizadas em um arquivo `.env` na raiz do repositório. Recomendamos copiar o modelo (se existir) ou criar do zero com o formato `VARIAVEL=valor`, um por linha. O projeto carrega esse arquivo automaticamente usando `python-dotenv` antes de iniciar os downloads.
+## 🔑 Configuração de Credenciais (.env)
 
-### Passo a passo para criar o `.env`
+O sistema exige credenciais para acessar as APIs da NASA, Copernicus e CETESB. Crie um arquivo `.env` na raiz do projeto seguindo o modelo abaixo:
 
-1. Crie um arquivo chamado `.env` na raiz do repositório.
-2. Defina as chaves necessárias seguindo os exemplos abaixo:
-    CETESB_USER=
-    CETESB_PASSWORD=
-    CDSAPI_URL=
-    CDSAPI_KEY=
-    NASA_USER=
-    NASA_PASSWORD=
-    COPERNICUS_USER=
-    COPERNICUS_PASSWORD=
+```ini
+# --- NASA Earthdata (MERRA-2, MODIS, OMI) ---
+# Cadastro: https://urs.earthdata.nasa.gov/
+# IMPORTANTE: Autorize os apps "NASA GESDISC DATA ARCHIVE" e "LP DAAC" no seu perfil.
+NASA_USER=seu_usuario
+NASA_PASSWORD=sua_senha
 
-> Alguns scripts também aceitam credenciais configuradas nos arquivos padrão dos serviços (por exemplo, `~/.cdsapirc` ou `~/.netrc`). Mas esta desativado por padrão para manter o padrão de todas as credenciais em .env
+# --- Copernicus Climate Data Store (ERA5) ---
+# Cadastro: https://cds.climate.copernicus.eu/
+# O formato da chave mudou recentemente. Verifique seu perfil no site.
+CDSAPI_URL=https://cds.climate.copernicus.eu/api/v2
+CDSAPI_KEY=UID:API_KEY
 
-### Credenciais ERA5 (CDS API)
+# --- Copernicus Data Space Ecosystem (TROPOMI) ---
+# Cadastro: https://dataspace.copernicus.eu/
+COPERNICUS_USER=seu_email@dominio.com
+COPERNICUS_PASSWORD=sua_senha
 
-Para baixar dados ERA5 é necessário ter conta no Copernicus Climate Data Store.
+# --- CETESB Qualar (Estações SP) ---
+# Cadastro: https://qualar.cetesb.sp.gov.br/
+CETESB_USER=seu_login
+CETESB_PASSWORD=sua_senha
+```
 
-1. **Cadastro/Login**: Acesse [https://cds.climate.copernicus.eu/](https://cds.climate.copernicus.eu/) e crie uma conta ou faça login.
-2. **Aceite de licenças**: É obrigatório aceitar os termos de uso do dataset “ERA5 hourly data on single levels from 1940 to present”. Visite [https://cds.climate.copernicus.eu/cdsapp/#!/terms/licences-to-use-copernicus-products](https://cds.climate.copernicus.eu/cdsapp/#!/terms/licences-to-use-copernicus-products) e confirme a aceitação.
-3. **Obtenha UID e API Key**: No perfil do usuário (menu superior direito) copie o UID e a chave.
-4. **Configure no `.env`**:
+---
 
-    ```ini
-    CDSAPI_URL=https://cds.climate.copernicus.eu/api/v2
-    CDSAPI_KEY=SEU_UID:SUA_API_KEY
-    ```
+## ▶️ Fluxo de Trabalho (Como Usar)
 
-    Se preferir, ainda é possível usar o arquivo `~/.cdsapirc`, mas o `.env` mantém tudo no mesmo lugar.
+O projeto foi desenhado para funcionar através de um **Jupyter Notebook interativo**, que atua como o frontend da aplicação.
 
-### Credenciais MERRA-2 (NASA Earthdata)
+### 1. Interface Principal (`src/baixar_shapefiles.ipynb`)
 
-O downloader `MERRA2.py` utiliza o pacote local `merradownload` e requer credenciais da NASA Earthdata.
+1.  **Abra o Notebook**: Inicie o Jupyter e abra `src/baixar_shapefiles.ipynb`.
+2.  **Passo 1: Seleção e Download do Shapefile**:
+    *   Esta é a etapa pré-requisitada. O sistema precisa da geometria do município para recortar os dados de satélite.
+    *   Nos menus interativos, escolha o **Estado** e o **Município**.
+    *   Clique em **"Baixar e Plotar Shapefile"**.
+    *   O script salvará automaticamente os arquivos em `data/shapefiles/{UF}-{MUNICIPIO}/`.
+3.  **Passo 2: Download e Processamento dos Dados**:
+    *   Avance para a seção "Criar arquivo final" no mesmo notebook.
+    *   Defina as datas de **Início** e **Fim**.
+    *   Escolha o município (que aparecerá na lista após o passo 1);
+    *   Clique em **"Executar"**.
+    *   Isso acionará o orquestrador (`download_all.py`) para coletar dados de todas as fontes (ERA5, MERRA2, INMET, etc.) em paralelo.
 
-1. **Cadastro/Login**: Entre em [https://urs.earthdata.nasa.gov/](https://urs.earthdata.nasa.gov/) e crie sua conta.
-2. **Autorize o aplicativo**: Certifique-se de aceitar os Termos de Uso e autorizar o acesso aos conjuntos de dados MERRA-2.
-3. **Defina usuário e senha no `.env`**:
+### 2. Modo Avançado (Headless / Script)
 
-    ```ini
-    MERRA_USERNAME=seu_usuario
-    MERRA_PASSWORD=sua_senha
-    ```
+Se você já possui os shapefiles baixados (via notebook ou manualmente) e deseja rodar em um servidor ou em lote, pode chamar o orquestrador diretamente via Python:
 
-4. **Fallbacks suportados**:
-    - Se `MERRA_USERNAME`/`MERRA_PASSWORD` não estiverem definidos, os scripts tentam usar `EARTHDATA_USERNAME` e `EARTHDATA_PASSWORD`.
-    - Se nenhuma variável existir, o downloader procura um token válido no `~/.netrc`.
+```python
+from src.baixar_dados.download_all import download_all
 
-5. **Segurança**: Nunca compartilhe seu `.env`; armazene as credenciais apenas localmente.
+# Baixar dados de Janeiro/2023 para todos os shapefiles na pasta data/shapefiles
+df_final = download_all(
+    start="2023-01-01",
+    end="2023-01-31",
+    shapefiles_dir="data/shapefiles",
+    max_workers=4
+)
+```
 
-### Credenciais TROPOMI (Copernicus Data Scape Ecosystem)
+### Argumentos Principais
+- `start`, `end`: Datas de início e fim (YYYY-MM-DD).
+- `shapefiles_dir`: Diretório contendo os shapefiles dos municípios alvo.
+- `output_dir`: Onde os CSVs serão salvos (padrão: `data/output`).
+- `final_schema`:
+    - `"all"`: Mantém todas as colunas encontradas.
+    - `"reference"`: Filtra e ordena as colunas conforme um CSV modelo (ex: `data/reference.csv`).
+    - `"inmet"`: Força o padrão do INMET.
 
-1. Para conseguir baixar os dados do Tropobi de objetos sólidos é necessário criar uma conta no CDSE:
-[Link](https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/auth?client_id=account-console&redirect_uri=https%3A%2F%2Fidentity.dataspace.copernicus.eu%2Fauth%2Frealms%2FCDSE%2Faccount%2F%23%2Fpersonal-info&state=3eb699d9-3654-447a-8795-80f5932ad895&response_mode=fragment&response_type=code&scope=openid&nonce=76768815-5d04-40ea-8251-4b24dfc8fef9&code_challenge=PmJHoHnfwYpVrzZJ4-iUM1JbOCO9xmNwMGkwUbDozio&code_challenge_method=S256)
+---
 
-2. Com a conta criada salve no .env as variáveis: 
-- COPERNICUS_USER
-- COPERNICUS_PASSWORD
+## 📁 Estrutura de Saída
 
-3. É NECESSÁRIO CONFIRMAR O EMAIL APÓS CRIAR A CONTA PARA O FUNCIONAMENTO DA API
+```text
+data/
+├── output/
+│   ├── cetesb/          # CSVs brutos da CETESB
+│   ├── era5/            # CSVs brutos do ERA5
+│   ├── ...              # (outras fontes)
+│   ├── final/
+│   │   ├── by_municipio/
+│   │   │   └── final_3550308.csv  # CSV consolidado de cada município
+│   │   └── final_by_ibge_date.csv # ARQUIVO FINAL UNIFICADO (Todos os municípios)
+└── cache/               # Arquivos temporários (autolimpeza ativa)
+```
 
-### Execução
+---
 
-Com o `.env` configurado, execute os notebooks ou scripts em `src/` normalmente. Todos os carregamentos de credenciais são automáticos, dispensando parâmetros extras na linha de comando.
+## ✅ Status de Validação
 
-- **MERRA-2**: o script `src/baixar_dados/MERRA2.py` sempre recebe o caminho completo do shapefile da área de interesse. O centroid do polígono é usado para buscar as coordenadas e o nome do shapefile passa a identificar a pasta/cache dos downloads. Não é possível trabalhar apenas com o código IBGE; garanta que o shapefile (e seus arquivos auxiliares `.shx/.dbf/.prj`) estejam acessíveis localmente. Após combinar todas as variáveis, o CSV final recebe a coluna `codigo_ibge` (lida do shapefile ou de um `*_ibge.csv` do mesmo diretório) e o cache é limpo automaticamente.
+| Scraper | Status | Obs |
+| :--- | :--- | :--- |
+| **DATASUS** | ✅ OK | Validado (SIH/RD) |
+| **ERA5** | ✅ OK | Validado |
+| **INMET** | ✅ OK | Validado |
+| **Índice Calc.** | ✅ OK | Validado (Ondas de calor, frio, SPI) |
+| **MERRA-2** | ✅ OK | Validado (Correção de datas e agregação) |
+| **CETESB** | ✅ OK | Validado (Unidades µg/m³ verificadas) |
+| **MODIS** | ✅ OK | Implementado via `earthaccess` (sem GDAL) |
+| **OMI** | ✅ OK | Validado (Conversão para DU) |
+| **TROPOMI** | ✅ OK | Pipeline otimizado (Stream day-by-day) |
+| **Orquestrador** | ✅ OK | Paralelismo e Dependências implementados |

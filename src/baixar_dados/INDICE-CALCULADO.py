@@ -208,7 +208,7 @@ class DiversosDownloader:
         shapefile_path,
         start_date,
         end_date,
-        output_csv="data/output/diversos/diversos_data.csv",
+        output_csv="data/output/indices/indices_data.csv",
         inmet_df: pd.DataFrame | None = None,
     ):
         LOGGER.info("Iniciando processamento de dados diversos...")
@@ -221,7 +221,7 @@ class DiversosDownloader:
             df_inmet = inmet_df.copy()
         else:
             shp_stem = Path(str(shapefile_path)).stem
-            temp_inmet_csv = f"data/cache/temp_inmet_diversos_{shp_stem}.csv"
+            temp_inmet_csv = f"data/cache/temp_inmet_indices_{shp_stem}.csv"
             try:
                 # INMETDownloader usa fetch_daily_data
                 df_inmet = self._get_inmet_downloader().fetch_daily_data(
@@ -419,7 +419,7 @@ class DiversosDownloader:
         # Salvar
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
         final_df.to_csv(output_csv, index=False)
-        LOGGER.info(f"Dados diversos salvos em {output_csv}")
+        LOGGER.info(f"Dados de índices calculados salvos em {output_csv}")
         
         return final_df
 

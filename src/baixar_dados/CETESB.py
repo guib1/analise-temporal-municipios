@@ -11,6 +11,12 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+	sys.path.append(str(PROJECT_ROOT))
 
 from src.utils.geo import parse_date, format_ddmmyyyy
 
@@ -40,7 +46,10 @@ class CETESBDownloader:
         self.password = password or os.getenv("CETESB_PASSWORD")
         
         if not self.username or not self.password:
-            raise ValueError("Credenciais CETESB não encontradas. Defina CETESB_USER e CETESB_PASSWORD no .env")
+            raise ValueError(
+                "Credenciais CETESB não encontradas. "
+                "Defina CETESB_USER e CETESB_PASSWORD no arquivo .env."
+            )
             
         self.session = requests.Session()
         self.session.headers.update({
@@ -61,7 +70,7 @@ class CETESBDownloader:
         LOGGER.info("Autenticando no QUALAR/CETESB...")
         try:
             # Acessa página de login para cookies (home.do contém o formulário)
-            self.session.get(self.HOME_URL)
+            self.session.get(self.HOME_URL, timeout=30)
             
             payload = {
                 "cetesb_login": self.username,
@@ -69,7 +78,7 @@ class CETESBDownloader:
                 "enviar": "OK"
             }
             
-            response = self.session.post(self.LOGIN_URL, data=payload)
+            response = self.session.post(self.LOGIN_URL, data=payload, timeout=30)
             
             # Verifica redirecionamento ou sucesso
             if response.url == self.HOME_URL or "Logoff" in response.text or "Bem Vindo" in response.text:
@@ -178,7 +187,7 @@ class CETESBDownloader:
             # 1. Initialize Export Page (Important for session state)
             init_url = f"{self.EXPORT_URL}?method=pesquisarInit"
             self.session.headers.update({"Referer": self.HOME_URL})
-            self.session.get(init_url)
+            self.session.get(init_url, timeout=30)
             
             # 2. POST Data Request
             post_url = f"{self.EXPORT_URL}?method=pesquisar"
@@ -197,7 +206,7 @@ class CETESBDownloader:
             try:
                 # Update Referer to the init page
                 self.session.headers.update({"Referer": init_url})
-                resp = self.session.post(post_url, data=payload)
+                resp = self.session.post(post_url, data=payload, timeout=60)
                 
                 if resp.status_code != 200:
                     LOGGER.error(f"Erro HTTP {resp.status_code} ao baixar {var_name}")

@@ -9,6 +9,12 @@ from datetime import datetime, timedelta, date
 from typing import List, Optional, Tuple
 import pandas as pd
 import numpy as np
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+	sys.path.append(str(PROJECT_ROOT))
 
 from src.utils.geo import parse_date, centroid_from_shapefile, get_ibge_code
 
@@ -37,7 +43,8 @@ class INMETDownloader:
         if self._stations_cache is None:
             # Fetch stations directly from API (metadata endpoint seems to still work)
             try:
-                response = requests.get("https://apitempo.inmet.gov.br/estacoes/T")
+                # Add timeout to prevent hanging
+                response = requests.get("https://apitempo.inmet.gov.br/estacoes/T", timeout=30)
                 if response.status_code == 200:
                     data = response.json()
                     self._stations_cache = pd.DataFrame(data)
@@ -229,20 +236,32 @@ class INMETDownloader:
         zip_path = os.path.join(self.CACHE_DIR, zip_filename)
         url = f"https://portal.inmet.gov.br/uploads/dadoshistoricos/{year}.zip"
 
-        # Download if not exists
-        if not os.path.exists(zip_path):
+        # Download if not exists or if size is extremely small (corrupt)
+        if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 100:
             LOGGER.info(f"Downloading historical data for {year}...")
             try:
-                response = requests.get(url, stream=True)
+                response = requests.get(url, stream=True, timeout=60) # Added timeout
                 if response.status_code == 200:
                     with open(zip_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
+                    
+                    # Verify validity immediately
+                    if not zipfile.is_zipfile(zip_path):
+                        LOGGER.error(f"Downloaded file {zip_path} is not a valid ZIP. Removing.")
+                        os.remove(zip_path)
+                        return pd.DataFrame()
+                        
                 else:
                     LOGGER.error(f"Failed to download {url}. Status: {response.status_code}")
                     return pd.DataFrame()
             except Exception as e:
                 LOGGER.error(f"Download error: {e}")
+                if os.path.exists(zip_path):
+                    try:
+                        os.remove(zip_path)
+                    except:
+                        pass
                 return pd.DataFrame()
 
         # Extract specific station file
@@ -630,9 +649,9 @@ if __name__ == '__main__':
         try:
             df_result = downloader.fetch_daily_data(
                 shapefile_path=shapefile,
-                start='2023-01-01',
-                end='2023-02-01',
-                out_csv='data/output/inmet/São_Paulo_inmet_2023.csv'
+                start='2020-01-01',
+                end='2020-01-31',
+                out_csv='data/output/inmet/São_Paulo_inmet_2020.csv'
             )
             print("\n--- Download and processing successful ---")
             print(df_result.head())

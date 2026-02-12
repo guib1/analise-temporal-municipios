@@ -17,6 +17,16 @@ import re
 log = logging.getLogger('opendap_download')
 
 
+class AuthenticationError(Exception):
+    """Raised when NASA Earthdata credentials are invalid or expired."""
+    pass
+
+
+class DownloadError(Exception):
+    """Raised when a file download fails (HTTP error, corrupted file, etc.)."""
+    pass
+
+
 
 
 class DownloadManager(object):
@@ -92,9 +102,56 @@ class DownloadManager(object):
         file_path = os.path.join(self.download_path, self.get_filename(query))
         self.__download_and_save_file(query, file_path)
 
+    def _validate_authentication(self):
+        """
+        Pre-check authentication by requesting the first URL and verifying
+        we get valid data (not an HTML error page or 401).
+        """
+        if not self.download_urls:
+            raise DownloadError('No download URLs provided.')
+
+        test_url = self.download_urls[0]
+        r = self._authenticated_session.get(test_url, stream=True, timeout=60)
+
+        if r.status_code == 401:
+            raise AuthenticationError(
+                'NASA Earthdata authentication failed (HTTP 401). '
+                'Please verify your NASA_USER and NASA_PASSWORD in the .env file, '
+                'and ensure GES DISC is authorized at '
+                'https://urs.earthdata.nasa.gov (Profile → Applications → Authorize).'
+            )
+        if r.status_code == 403:
+            raise AuthenticationError(
+                'NASA Earthdata access forbidden (HTTP 403). '
+                'Your account may not have GES DISC data access authorized. '
+                'Visit https://urs.earthdata.nasa.gov → Profile → Applications → Authorize.'
+            )
+        if r.status_code != 200:
+            raise DownloadError(
+                f'Unexpected HTTP status {r.status_code} when accessing MERRA-2 data. '
+                f'URL: {test_url[:120]}...'
+            )
+
+        # Check if response is HTML (error page) instead of binary data
+        content_type = r.headers.get('Content-Type', '')
+        first_bytes = r.content[:100]
+        if b'<html' in first_bytes.lower() or b'<!doctype' in first_bytes.lower():
+            raise AuthenticationError(
+                'NASA Earthdata returned an HTML page instead of data. '
+                'This usually means authentication failed silently. '
+                'Please verify your credentials and GES DISC authorization.'
+            )
+
+        log.info('Authentication validated successfully.')
+        r.close()
+
     def start_download(self, nr_of_threads=4):
         if self._authenticated_session is None:
             self._authenticated_session = self.__create_authenticated_sesseion()
+
+        # Validate authentication before downloading hundreds of files
+        self._validate_authentication()
+
         # Create the download folder.
         os.makedirs(self.download_path, exist_ok=True)
         # p = multiprocessing.Pool(nr_of_processes)
@@ -121,11 +178,38 @@ class DownloadManager(object):
         return file_name
 
     def __download_and_save_file(self, url, file_path):
-        r = self._authenticated_session.get(url, stream=True)
+        # Add timeout to prevent hanging on network drop
+        r = self._authenticated_session.get(url, stream=True, timeout=60)
+
+        if r.status_code == 401:
+            raise AuthenticationError(
+                f'Authentication failed (HTTP 401) for: {os.path.basename(file_path)}'
+            )
+        if r.status_code != 200:
+            log.warning(
+                'HTTP %d for %s — skipping file.',
+                r.status_code, os.path.basename(file_path)
+            )
+            return r.status_code
+
         with open(file_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=1024):
                 if chunk:
                     f.write(chunk)
+
+        # Post-download validation: detect corrupted files (HTML error pages, etc.)
+        file_size = os.path.getsize(file_path)
+        if file_size < 100:  # A valid nc4 file is always > 100 bytes
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            if b'Access denied' in content or b'<html' in content.lower():
+                os.remove(file_path)
+                raise AuthenticationError(
+                    f'Downloaded file for {os.path.basename(file_path)} '
+                    f'contains an error response ({file_size} bytes): '
+                    f'{content[:80].decode("utf-8", errors="replace")}'
+                )
+
         return r.status_code
 
     def __create_authenticated_sesseion(self):

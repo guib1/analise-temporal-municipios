@@ -9,9 +9,8 @@ import xarray as xr
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from calendar import monthrange
-from merradownload.opendap_download.multi_processing_download import DownloadManager
+from .opendap_download.multi_processing_download import DownloadManager
 
-sys.path.append('../src')
 
 def baixar_merra(
     username,
@@ -23,7 +22,9 @@ def baixar_merra(
     database_id,
     locs,
     conversion_function,
-    aggregator
+    aggregator,
+    start_date=None,
+    end_date=None
 ):
 
     ####### CONSTANTS - DO NOT CHANGE BELOW THIS LINE #######
@@ -61,7 +62,7 @@ def baixar_merra(
         index = np.abs(coord_array-calc_coord).argmin()
         return coord_array[index]
 
-    def translate_year_to_file_number(year):
+    def translate_year_to_file_number(year, month=None):
         """
         The file names consist of a number and a meta data string. 
         The number changes over the years. 1980 until 1991 it is 100, 
@@ -89,30 +90,60 @@ def baixar_merra(
         parameter = map(lambda x: x + lon_para, parameter)
         return ','.join(parameter)
         
-    def generate_download_links(download_years, base_url, dataset_name, url_params):
+    def generate_download_links(download_years, base_url, dataset_name, url_params, start_date=None, end_date=None):
         """
         Generates the links for the download. 
         download_years: The years you want to download as array. 
         dataset_name: The name of the data set. For example tavg1_2d_slv_Nx
+        start_date: datetime object (optional)
+        end_date: datetime object (optional)
         """
         urls = []
-        for y in download_years: 
-            y_str = str(y)
-            file_num = translate_year_to_file_number(y)
-            for m in range(1,13):
+
+        # If strict dates are provided, iterate day by day
+        if start_date and end_date:
+            curr_date = start_date
+            while curr_date <= end_date:
+                y = curr_date.year
+                m = curr_date.month
+                d = curr_date.day
+                
+                y_str = str(y)
                 m_str = str(m).zfill(2)
-                _, nr_of_days = monthrange(y, m)
-                for d in range(1,nr_of_days+1):
-                    d_str = str(d).zfill(2)
-                    # Create the file name string
-                    file_name = 'MERRA2_{num}.{name}.{y}{m}{d}.nc4'.format(
-                        num=file_num, name=dataset_name, 
-                        y=y_str, m=m_str, d=d_str)
-                    # Create the query
-                    query = '{base}{y}/{m}/{name}.nc4?{params}'.format(
-                        base=base_url, y=y_str, m=m_str, 
-                        name=file_name, params=url_params)
-                    urls.append(query)
+                d_str = str(d).zfill(2)
+                
+                file_num = translate_year_to_file_number(y)
+                
+                file_name = 'MERRA2_{num}.{name}.{y}{m}{d}.nc4'.format(
+                    num=file_num, name=dataset_name, 
+                    y=y_str, m=m_str, d=d_str)
+                
+                query = '{base}{y}/{m}/{name}.nc4?{params}'.format(
+                    base=base_url, y=y_str, m=m_str, 
+                    name=file_name, params=url_params)
+                urls.append(query)
+                
+                curr_date += timedelta(days=1)
+                
+        else:
+            # Legacy behavior: download entire years
+            for y in download_years: 
+                y_str = str(y)
+                file_num = translate_year_to_file_number(y)
+                for m in range(1,13):
+                    m_str = str(m).zfill(2)
+                    _, nr_of_days = monthrange(y, m)
+                    for d in range(1,nr_of_days+1):
+                        d_str = str(d).zfill(2)
+                        # Create the file name string
+                        file_name = 'MERRA2_{num}.{name}.{y}{m}{d}.nc4'.format(
+                            num=file_num, name=dataset_name, 
+                            y=y_str, m=m_str, d=d_str)
+                        # Create the query
+                        query = '{base}{y}/{m}/{name}.nc4?{params}'.format(
+                            base=base_url, y=y_str, m=m_str, 
+                            name=file_name, params=url_params)
+                        urls.append(query)
         return urls
 
     print('DOWNLOADING DATA FROM MERRA')
@@ -130,7 +161,7 @@ def baixar_merra(
         requested_lat = '[{lat}:1:{lat}]'.format(lat=lat_closest)
         requested_lon = '[{lon}:1:{lon}]'.format(lon=lon_closest)
         parameter = generate_url_params([field_id], '[0:1:23]', requested_lat, requested_lon)
-        generated_URL = generate_download_links(years, database_url, database_id, parameter)
+        generated_URL = generate_download_links(years, database_url, database_id, parameter, start_date, end_date)
         download_manager = DownloadManager()
         download_manager.set_username_and_password(username, password)
         download_manager.download_path = field_name + '/' + loc
@@ -172,16 +203,45 @@ def baixar_merra(
         dfs = []
         failed_files = []
         folder_path = os.path.join(field_name, loc)
-        for file in sorted(os.listdir(folder_path)):
-            if '.nc4' in file:
-                file_path = os.path.join(folder_path, file)
-                try:
-                    with xr.open_dataset(file_path) as ds:
-                        ds = extract_date(ds)
-                        dfs.append(ds.to_dataframe())
-                except Exception as exc:
-                    failed_files.append((file, str(exc)))
-                    print(f'Issue with file {file}: {exc}')
+
+        if not os.path.exists(folder_path):
+            raise RuntimeError(
+                f'Download folder not found: {folder_path}. '
+                f'The download step may have failed.'
+            )
+
+        nc4_files = sorted(f for f in os.listdir(folder_path) if '.nc4' in f)
+        if not nc4_files:
+            raise RuntimeError(
+                f'No .nc4 files found in {folder_path}. '
+                f'The download step may have failed or files were not saved.'
+            )
+
+        for file in nc4_files:
+            file_path = os.path.join(folder_path, file)
+
+            # Pre-validate: detect corrupted files (HTML error pages, tiny files)
+            file_size = os.path.getsize(file_path)
+            if file_size < 200:
+                with open(file_path, 'rb') as fh:
+                    raw = fh.read()
+                msg = (
+                    f'File {file} is only {file_size} bytes and appears corrupted: '
+                    f'{raw[:80].decode("utf-8", errors="replace")}'
+                )
+                if b'Access denied' in raw or b'<html' in raw.lower():
+                    msg += ' (likely authentication failure)'
+                failed_files.append((file, msg))
+                print(f'Skipping corrupted file {file}: {msg}')
+                continue
+
+            try:
+                with xr.open_dataset(file_path) as ds:
+                    ds = extract_date(ds)
+                    dfs.append(ds.to_dataframe())
+            except Exception as exc:
+                failed_files.append((file, str(exc)))
+                print(f'Issue with file {file}: {exc}')
 
         if not dfs:
             sample_errors = '; '.join(
@@ -195,19 +255,42 @@ def baixar_merra(
 
         df_hourly = pd.concat(dfs)
         df_hourly['time'] = df_hourly.index.get_level_values(level=2)
-        df_hourly.columns = [field_name, 'date', 'time']
+        
+        # Robustly identify the data column (it's not 'date' or 'time')
+        cols = list(df_hourly.columns)
+        data_cols = [c for c in cols if c not in ['date', 'time']]
+        if not data_cols:
+             raise ValueError(f"Could not identify data column in {cols}")
+        data_col = data_cols[0]
+        
+        # Rename data column to field_name if it's different
+        if data_col != field_name:
+            df_hourly = df_hourly.rename(columns={data_col: field_name})
+
+        # Force numeric, coercing errors to NaN
+        df_hourly[field_name] = pd.to_numeric(df_hourly[field_name], errors='coerce')
+        
+        # Remove any rows where data might be missing (optional but cleaner for aggregation)
+        # df_hourly = df_hourly.dropna(subset=[field_name]) # Kept commented to match original behavior of mean() handling NaNs
+
         df_hourly[field_name] = df_hourly[field_name].apply(conversion_function)
         df_hourly['date'] = pd.to_datetime(df_hourly['date'])
         df_hourly.to_csv(field_name + '/' + loc + '_hourly.csv', header=[field_name, 'date', 'time'], index=False)
         df_hourly = pd.read_csv(field_name + '/' + loc + '_hourly.csv')
-        df_daily = df_hourly.groupby('date').agg(aggregator)
-        df_daily = df_daily.drop('time', axis=1)
+        
+        # Aggregate ONLY the data column (ignore 'time' column which causes mean/agg failure)
+        df_daily = df_hourly.groupby('date')[[field_name]].agg(aggregator)
+        # df_daily = df_daily.drop('time', axis=1) # No longer needed as we selected only field_name
+        
         df_daily['date'] = df_daily.index
         df_daily.to_csv(field_name + '/' + loc + '_daily.csv', header=[field_name, 'date'], index=False)
         df_weekly = df_daily
         df_weekly['Week'] = pd.to_datetime(df_weekly['date']).apply(lambda x: x.isocalendar()[1])
         df_weekly['Year'] = pd.to_datetime(df_weekly['date']).apply(lambda x: x.year)
-        df_weekly = df_weekly.groupby(['Year', 'Week']).agg(aggregator)
+        
+        # Aggregate ONLY the data column
+        df_weekly = df_weekly.groupby(['Year', 'Week'])[[field_name]].agg(aggregator)
+        
         df_weekly['Year'] = df_weekly.index.get_level_values(0)
         df_weekly['Week'] = df_weekly.index.get_level_values(1)
         df_weekly.to_csv(field_name + '/' + loc + '_weekly.csv', index=False)

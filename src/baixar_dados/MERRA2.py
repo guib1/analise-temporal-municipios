@@ -13,6 +13,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+	sys.path.append(str(PROJECT_ROOT))
+
 from src.utils.geo import parse_date, centroid_from_shapefile, get_ibge_code
 
 # Ensure local 'merradownload' package can be imported when running as a script
@@ -27,6 +31,10 @@ if not dotenv_loaded:
     load_dotenv(PROJECT_ROOT / ".env")
 
 from merradownload.merra_scraping import baixar_merra
+from merradownload.opendap_download.multi_processing_download import (
+    AuthenticationError,
+    DownloadError,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,18 +80,18 @@ class MERRA2Downloader:
         password: Optional[str] = None,
         cache_dir: Optional[str | Path] = None,
     ) -> None:
-        self.username = (os.getenv("NASA_USER")
-        )
-        self.password = (os.getenv("NASA_PASSWORD")
-        )
+        self.username = os.getenv("NASA_USER")
+        self.password = os.getenv("NASA_PASSWORD")
+
         self.cache_dir = Path(cache_dir) if cache_dir else self.CACHE_ROOT
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         if not self.username or not self.password:
             netrc_path = Path.home() / ".netrc"
             if not netrc_path.exists():  # pragma: no cover - requires local credentials
-                raise RuntimeError(
-                    "Earthdata credentials not found. Please ensure 'NASA_USER' and 'NASA_PASSWORD' are set in your .env file."
+                raise ValueError(
+                    "Credenciais Earthdata não encontradas. "
+                    "Por favor, defina 'NASA_USER' e 'NASA_PASSWORD' no arquivo .env."
                 )
 
     def fetch_daily_data(
@@ -208,7 +216,11 @@ class MERRA2Downloader:
                         locs=[(loc_label, lat, lon)],
                         conversion_function=self._identity,
                         aggregator="mean",
+                        start_date=start_date,
+                        end_date=end_date,
                     )
+            except AuthenticationError:
+                raise
             except Exception as exc:
                 LOGGER.error(
                     "Failed to download %s (%s) for %s: %s",
@@ -301,8 +313,8 @@ if __name__ == "__main__":
         try:
             df_result = downloader.fetch_daily_data(
                 shapefile_path=shapefile,
-                start="2024-01-01",
-                end="2024-02-01",
+                start="2020-01-01",
+                end="2020-01-31",
                 out_csv="data/output/merra2/sp_sao_paulo_merra2.csv",
             )
             print(df_result.head())

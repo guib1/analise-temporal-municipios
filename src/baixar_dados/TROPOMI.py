@@ -18,6 +18,10 @@ from dotenv import load_dotenv
 from shapely.geometry import Point, Polygon, box
 from shapely.wkt import dumps as wkt_dumps
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+	sys.path.append(str(PROJECT_ROOT))
+
 from src.utils.geo import parse_date
 
 # Carrega variáveis de ambiente
@@ -54,12 +58,6 @@ class TropomiDownloader:
             "qa_threshold": 0.75,
             "unit_convert": True
         },
-        "no2omi": {
-            "product_type": "L2__NO2___",
-            "variable": "nitrogendioxide_tropospheric_column",
-            "qa_threshold": 0.75,
-            "unit_convert": True
-        }
     }
 
     def __init__(self, username: Optional[str] = None, password: Optional[str] = None):
@@ -67,7 +65,10 @@ class TropomiDownloader:
         self.password = password or os.getenv("COPERNICUS_PASSWORD")
 
         if not self.username or not self.password:
-            raise ValueError("Credenciais Copernicus não encontradas. Defina COPERNICUS_USER e COPERNICUS_PASSWORD.")
+            raise ValueError(
+                "Credenciais Copernicus não encontradas. "
+                "Defina COPERNICUS_USER e COPERNICUS_PASSWORD no arquivo .env."
+            )
         
         self.access_token = None
         self.token_expiry = 0
@@ -85,7 +86,7 @@ class TropomiDownloader:
             "grant_type": "password",
         }
         try:
-            response = requests.post(self.AUTH_URL, data=data)
+            response = requests.post(self.AUTH_URL, data=data, timeout=30)
             response.raise_for_status()
             token_data = response.json()
             self.access_token = token_data["access_token"]
@@ -106,142 +107,171 @@ class TropomiDownloader:
                 LOGGER.error(f"Detalhes: {response.content.decode()}")
             raise
 
-    def fetch_data(
-        self,
-        shapefile_path: str,
-        start_date: str,
-        end_date: str,
-        output_csv: str = "data/output/tropomi/tropomi_data.csv",
-        cache_dir: str = "data/cache/tropomi"
-    ) -> pd.DataFrame:
+    def fetch_data(self, shapefile_path, start_date, end_date, output_csv="data/output/tropomi/tropomi_data.csv", cache_dir="data/cache/tropomi"):
         """
-        Baixa, processa e agrega dados TROPOMI.
+        Baixa, processa e agrega dados TROPOMI dia a dia.
+        Salva incrementalmente no CSV e limpa o cache.
         """
-        start_dt = datetime.combine(parse_date(start_date), datetime.min.time())
-        end_dt = datetime.combine(parse_date(end_date), datetime.min.time()) + timedelta(days=1)
-        
-        # Formato ISO para OData
-        start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        end_iso = end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-        # Ler shapefile
+        # Carregar shapefile
         gdf = gpd.read_file(shapefile_path)
-        # Converter geometria para WKT Polygon para o filtro OData
-        # OData espera: geography'SRID=4326;POLYGON((...))'
-        try:
-            geom = gdf.geometry.union_all()
-        except AttributeError:
-            geom = gdf.geometry.unary_union
+        if gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs(epsg=4326)
             
-        if geom.geom_type != 'Polygon':
-            geom = geom.convex_hull # Simplificação se for MultiPolygon complexo
-            
-        wkt_poly = wkt_dumps(geom)
+        # Simplificar geometria para query: Usar Bounding Box (Box)
+        minx, miny, maxx, maxy = gdf.total_bounds
+        # Formato WKT: POLYGON((minx miny, maxx miny, maxx maxy, minx maxy, minx miny))
+        wkt_poly = f"POLYGON(({minx} {miny}, {maxx} {miny}, {maxx} {maxy}, {minx} {maxy}, {minx} {miny}))"
+        
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date)
         
         os.makedirs(cache_dir, exist_ok=True)
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-
-        all_stats = []
-
-        for pol_name, config in self.PRODUCTS.items():
-            LOGGER.info(f"Buscando produtos {pol_name.upper()} ({config['product_type']})...")
-            
-            # Construir query OData
-            # Filtra por Coleção, Data, Interseção e Tipo de Produto (no nome)
-            filter_query = (
-                f"Collection/Name eq 'SENTINEL-5P' and "
-                f"ContentDate/Start ge {start_iso} and "
-                f"ContentDate/Start lt {end_iso} and "
-                f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt_poly}') and "
-                f"contains(Name, '{config['product_type']}')"
-            )
-            
-            token = self._get_token()
-            headers = {"Authorization": f"Bearer {token}"}
-            
+        
+        # Inicializar CSV se não existir
+        # Headers esperados: date, no2tropomi_max, no2tropomi_min, no2tropomi_mea, o3tropomi_max, ...
+        expected_cols = ['date']
+        for pol in ['no2tropomi', 'o3tropomi']:
+            for stat in ['max', 'min', 'mea']:
+                expected_cols.append(f"{pol}_{stat}")
+                
+        # Validate existing file header
+        if os.path.exists(output_csv):
             try:
-                # Busca paginada (simplificada para primeira página por enquanto, max 1000)
-                query_url = f"{self.CATALOGUE_URL}?$filter={filter_query}&$top=100&$orderby=ContentDate/Start asc"
-                LOGGER.debug(f"Query URL: {query_url}")
-                
-                r = requests.get(query_url, headers=headers)
-                r.raise_for_status()
-                results = r.json()
-                products = results.get('value', [])
-                
+                existing_cols = pd.read_csv(output_csv, nrows=0).columns.tolist()
+                if existing_cols != expected_cols:
+                    LOGGER.warning(f"Schema mismatch in {output_csv}. Expected {expected_cols}, found {existing_cols}. Overwriting.")
+                    os.remove(output_csv)
             except Exception as e:
-                LOGGER.error(f"Erro na busca OData: {e}")
-                continue
+                LOGGER.warning(f"Error reading {output_csv}: {e}. Overwriting.")
+                os.remove(output_csv)
 
-            if not products:
-                LOGGER.warning(f"Nenhum produto encontrado para {pol_name}")
-                continue
+        if not os.path.exists(output_csv):
+            pd.DataFrame(columns=expected_cols).to_csv(output_csv, index=False)
             
-            LOGGER.info(f"Encontrados {len(products)} produtos para {pol_name}. Iniciando download e processamento...")
-
-            for prod in products:
-                prod_id = prod['Id']
-                prod_name = prod['Name']
-                file_path = os.path.join(cache_dir, f"{prod_name}.nc") 
+        # Loop dia a dia
+        current_date = start_dt
+        while current_date <= end_dt:
+            day_str = current_date.strftime("%Y-%m-%d")
+            LOGGER.info(f"=== Processando data: {day_str} ===")
+            
+            # Dicionário para armazenar stats do dia
+            daily_stats = {'date': current_date}
+            
+            # Data range para o dia (00:00 a 23:59)
+            day_start_iso = current_date.strftime("%Y-%m-%dT00:00:00.000Z")
+            day_end_iso = (current_date + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
+            
+            # Para cada poluente (NO2, O3)
+            for pol_key, config in self.PRODUCTS.items():
+                LOGGER.info(f"  > Buscando {pol_key.upper()}...")
                 
-                if not os.path.exists(file_path):
-                    LOGGER.info(f"Baixando {prod_name}...")
-                    download_url = f"{self.DOWNLOAD_URL_BASE}({prod_id})/$value"
+                # Query
+                filter_query = (
+                    f"Collection/Name eq 'SENTINEL-5P' and "
+                    f"ContentDate/Start ge {day_start_iso} and "
+                    f"ContentDate/Start lt {day_end_iso} and "
+                    f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt_poly}') and "
+                    f"contains(Name, '{config['product_type']}')"
+                )
+                
+                try:
+                    token = self._get_token()
+                    headers = {"Authorization": f"Bearer {token}"}
+                    query_url = f"{self.CATALOGUE_URL}?$filter={filter_query}&$top=20" # Max 20 files per day per pol usually enough
+                    
+                    r = requests.get(query_url, headers=headers, timeout=30)
+                    r.raise_for_status()
+                    products = r.json().get('value', [])
+                except Exception as e:
+                    LOGGER.error(f"Erro na busca {pol_key}: {e}")
+                    continue
+                    
+                if not products:
+                    LOGGER.info(f"    Nenhum produto encontrado.")
+                    continue
+                    
+                LOGGER.info(f"    Encontrados {len(products)} arquivos.")
+                
+                pol_stats_list = []
+                
+                # Download e processamento "On the Fly"
+                for prod in products:
+                    prod_id = prod['Id']
+                    prod_name = prod['Name']
+                    file_path = os.path.join(cache_dir, f"{prod_name}.nc")
                     
                     try:
-                        # Stream download
-                        with requests.get(download_url, headers=headers, stream=True) as r_down:
-                            r_down.raise_for_status()
-                            # Salvar temporariamente
-                            temp_name = os.path.join(cache_dir, f"{prod_name}_temp")
-                            with open(temp_name, 'wb') as f:
-                                shutil.copyfileobj(r_down.raw, f)
-                            
-                            # Renomear para .nc
-                            os.rename(temp_name, file_path)
+                        # Download
+                        if not os.path.exists(file_path):
+                            download_url = f"{self.DOWNLOAD_URL_BASE}({prod_id})/$value"
+                            # Add 60s timeout
+                            with requests.get(download_url, headers=headers, stream=True, timeout=60) as r_down:
+                                r_down.raise_for_status()
+                                temp_name = os.path.join(cache_dir, f"{prod_name}_temp")
+                                with open(temp_name, 'wb') as f:
+                                    shutil.copyfileobj(r_down.raw, f)
+                                os.rename(temp_name, file_path)
+                        
+                        # Processar
+                        stats = self._process_product(file_path, pol_key, config, gdf)
+                        if stats:
+                            pol_stats_list.append(stats)
                             
                     except Exception as e:
-                        LOGGER.error(f"Erro ao baixar {prod_name}: {e}")
-                        if os.path.exists(temp_name): os.remove(temp_name)
-                        continue
+                        LOGGER.error(f"Erro processando {prod_name}: {e}")
+                    finally:
+                        # APAGAR CACHE IMEDIATAMENTE
+                        # Clean up original downloaded file if it exists
+                        if os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                            except Exception:
+                                pass
+                        
+                        # Clean up temp file if it exists (using variable defined in try scope if possible)
+                        # We use 'prod_name' which is defined in the loop
+                        try:
+                            possible_temp_name = os.path.join(cache_dir, f"{prod_name}_temp")
+                            if os.path.exists(possible_temp_name):
+                                os.remove(possible_temp_name)
+                        except Exception:
+                            pass
+
+                # Média do dia para este poluente
+                if pol_stats_list:
+                    df_pol = pd.DataFrame(pol_stats_list)
+                    # Colunas retornadas: no2_max, no2_min, etc.
+                    # Renomear para tropomi
+                    cols_renamed = {}
+                    for c in df_pol.columns:
+                        cols_renamed[c] = f"{pol_key}tropomi_{c.split('_')[1]}"
+                    df_pol = df_pol.rename(columns=cols_renamed)
+                    
+                    # Calcular médias das passagens
+                    mean_stats = df_pol.mean(numeric_only=True).to_dict()
+                    daily_stats.update(mean_stats)
+            
+            # Salvar dia no CSV se houver dados
+            if len(daily_stats) > 1: # Tem mais que só a data
+                df_day = pd.DataFrame([daily_stats])
+                # Reordenar colunas para bater com header (se possível)
+                # Adicionar colunas faltantes com NaN
+                for col in expected_cols:
+                    if col not in df_day.columns:
+                        df_day[col] = np.nan
                 
-                # Processar
-                stats = self._process_product(file_path, pol_name, config, gdf)
-                if stats:
-                    acq_date_str = prod['ContentDate']['Start']
-                    # Parse ISO date
-                    acq_date = datetime.fromisoformat(acq_date_str.replace('Z', '+00:00')).date()
-                    stats['date'] = acq_date
-                    all_stats.append(stats)
-
-        if not all_stats:
-            return pd.DataFrame()
-
-        # Consolidar
-        df_final = pd.DataFrame(all_stats)
-        
-        # Agrupar por data
-        df_daily = df_final.groupby('date').mean().reset_index()
-        
-        # Renomear colunas
-        rename_map = {}
-        for col in df_daily.columns:
-            if col == 'date': continue
-            parts = col.split('_')
-            if len(parts) == 2:
-                pol, stat = parts
-                if pol.endswith('omi'):
-                    rename_map[col] = col
-                else:
-                    rename_map[col] = f"{pol}tropomi_{stat}"
-        
-        df_daily = df_daily.rename(columns=rename_map)
-        
-        # Salvar
-        df_daily.to_csv(output_csv, index=False)
-        LOGGER.info(f"Dados salvos em {output_csv}")
-        
-        return df_daily
+                df_day = df_day[expected_cols]
+                
+                # Append com header=False
+                df_day.to_csv(output_csv, mode='a', header=False, index=False)
+                LOGGER.info(f"Dados de {day_str} salvos.")
+            else:
+                LOGGER.warning(f"Sem dados completos para {day_str}.")
+            
+            current_date += timedelta(days=1)
+            
+        return pd.read_csv(output_csv)
 
     def _process_product(self, nc_path: str, pol_name: str, config: dict, gdf_roi: gpd.GeoDataFrame) -> Optional[dict]:
         """
@@ -265,26 +295,31 @@ class TropomiDownloader:
                         zip_ref.extractall(temp_dir)
                         pass
 
-            try:
-                ds = xr.open_dataset(actual_nc_path, group='PRODUCT')
-            except Exception:
-                # Se falhar, pode não ter grupo PRODUCT ou estar corrompido
-                # Tentar abrir root
-                ds = xr.open_dataset(actual_nc_path)
-
-            # Carregar variáveis
-            if 'latitude' in ds:
-                lat = ds['latitude'].values[0]
-                lon = ds['longitude'].values[0]
-                val = ds[config['variable']].values[0]
-                qa = ds['qa_value'].values[0]
-            else:
-                # Fallback se estrutura for diferente
-                LOGGER.warning(f"Estrutura inesperada no arquivo {nc_path}")
-                ds.close()
-                return None
             
-            ds.close()
+            # --- CRITICAL SECTION: HDF5 ACCESS ---
+            from src.utils.locks import HDF5_LOCK
+            with HDF5_LOCK:
+                try:
+                    ds = xr.open_dataset(actual_nc_path, group='PRODUCT')
+                except Exception:
+                    # Se falhar, pode não ter grupo PRODUCT ou estar corrompido
+                    # Tentar abrir root
+                    ds = xr.open_dataset(actual_nc_path)
+
+                # Carregar variáveis
+                if 'latitude' in ds:
+                    lat = ds['latitude'].values[0]
+                    lon = ds['longitude'].values[0]
+                    val = ds[config['variable']].values[0]
+                    qa = ds['qa_value'].values[0]
+                else:
+                    # Fallback se estrutura for diferente
+                    LOGGER.warning(f"Estrutura inesperada no arquivo {nc_path}")
+                    ds.close()
+                    return None
+                
+                ds.close()
+
             
             if temp_dir:
                 shutil.rmtree(temp_dir)
@@ -342,5 +377,9 @@ if __name__ == "__main__":
         print("Defina COPERNICUS_USER e COPERNICUS_PASSWORD em .env")
     else:
         downloader = TropomiDownloader(user, pwd)
-        # Exemplo fictício
-        downloader.fetch_data("data/shapefiles/SP-Diadema/SP_Diadema.shp", "01/01/2024", "02/01/2024")
+        # Teste com São Paulo (Jan 2023)
+        shp = "data/shapefiles/SP-São_Paulo/SP_São_Paulo.shp"
+        if not os.path.exists(shp):
+            print(f"Shapefile não encontrado: {shp}")
+        else:
+            downloader.fetch_data(shp, "01/01/2023", "05/01/2023", output_csv="data/output/tropomi/tropomi_test.csv")

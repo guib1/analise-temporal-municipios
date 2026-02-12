@@ -522,8 +522,8 @@ if __name__ == "__main__":
     downloader = DataSUSDownloader(storage_format="csv")
     df_result = downloader.fetch_sih_asthma_daily(
         cod_ibge="3550308",
-        start="2000-01-01",
-        end="2000-12-31",
+        start="2020-01-01",
+        end="2020-01-31",
         output_csv="data/output/datasus/daily_3550308_asma.csv",
     )
     print(df_result.head())

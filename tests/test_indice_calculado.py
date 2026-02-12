@@ -168,28 +168,30 @@ class TestHeatWaveDetection(unittest.TestCase):
 
     def test_extreme_temps_trigger_heatwave(self):
         """Extreme temperature spike should trigger heat wave detection."""
-        n = 90
-        df = _make_daily_inmet(n_days=n)
-        # Constant baseline with extreme spike — ensures 97.5th percentile < spike
-        temps = np.full(n, 25.0)
-        temps[40:51] = 50.0  # 11 consecutive extreme days (well above any pctile)
+        # 730 days, 4 spike days (0.5%) — well below 2.5% tail
+        # Meehl criteria: >= 3 consecutive above T2, >= 3 above T1, avg > T1
+        n = 730
+        df = _make_daily_inmet(n_days=n, start="2019-01-01")
+        np.random.seed(99)
+        temps = np.random.uniform(20, 30, n)
+        temps[200:204] = 50.0  # 4 consecutive extreme days
         df["temperature_max"] = temps
         with patch.object(self.dl, "_get_elnino_data", return_value=pd.DataFrame()):
-            result = self.dl.fetch_data("dummy.shp", "01/01/2020", "31/03/2020",
+            result = self.dl.fetch_data("dummy.shp", "01/01/2019", "31/12/2020",
                                         output_csv="/tmp/test_indice_out2.csv",
                                         inmet_df=df)
         self.assertGreater(result["heatwave_has"].sum(), 0)
 
     def test_coldwave_extreme_cold(self):
         """Extreme cold spike should trigger cold wave detection."""
-        n = 90
-        df = _make_daily_inmet(n_days=n)
-        # Constant baseline with extreme cold spike
-        temps = np.full(n, 18.0)
-        temps[40:51] = -5.0  # 11 consecutive extreme cold days
+        n = 730
+        df = _make_daily_inmet(n_days=n, start="2019-01-01")
+        np.random.seed(99)
+        temps = np.random.uniform(15, 22, n)
+        temps[200:204] = -10.0  # 4 consecutive extreme cold days
         df["temperature_min"] = temps
         with patch.object(self.dl, "_get_elnino_data", return_value=pd.DataFrame()):
-            result = self.dl.fetch_data("dummy.shp", "01/01/2020", "31/03/2020",
+            result = self.dl.fetch_data("dummy.shp", "01/01/2019", "31/12/2020",
                                         output_csv="/tmp/test_indice_out3.csv",
                                         inmet_df=df)
         self.assertGreater(result["coldwave_has"].sum(), 0)
