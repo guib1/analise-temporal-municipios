@@ -351,7 +351,8 @@ class DownloadOrchestrator:
 					start_date=_format_ddmmyyyy(start),
 					end_date=_format_ddmmyyyy(end),
 					output_csv=str(out_csv),
-					cache_dir=str(cache_subdir)
+					cache_dir=str(cache_subdir),
+					max_threads=self.max_workers
 				)
 			
 			elif key == "modis":
@@ -493,12 +494,17 @@ class DownloadOrchestrator:
 		except ImportError:
 			USE_TQDM = False
 
+		# Suppress noisy logs
+		logging.getLogger("urllib3").setLevel(logging.WARNING)
+		logging.getLogger("requests").setLevel(logging.WARNING)
+		logging.getLogger("pysus").setLevel(logging.WARNING)
+
 		progress_bars = {}
 		if USE_TQDM:
 			print(f"\nIniciando downloads paralelos para {codibge_norm} ({len(tier1_keys)} fontes)...")
 			# Create bars in fixed order so they don't jump around
+			# Use position=i and leave=True to keep them stacked
 			for i, key in enumerate(tier1_keys):
-				# Indeterminate bar since we don't know exact chunks yet
 				progress_bars[key] = tqdm(total=1, desc=f"[{key.upper()}] Aguardando", position=i, leave=True)
 
 		with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -521,26 +527,33 @@ class DownloadOrchestrator:
 					codibge = target.codibge or shp.stem
 					codibge_norm = str(codibge).zfill(7) if str(codibge).isdigit() else str(codibge)
 					
+					output_path = ""
 					if key == "datasus":
 						disease_norm = disease.strip().lower()
-						outputs[key] = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
+						output_path = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
 					else:
-						outputs[key] = output_dir / key / f"{key}_{codibge_norm}.csv"
-						
+						output_path = output_dir / key / f"{key}_{codibge_norm}.csv"
+					
+					outputs[key] = output_path
+					
 					msg = f"[{key.upper()}] Finalizado."
-					LOGGER.info(msg)
+					# LOGGER.info(msg) # Avoid spamming main log if tqdm is used
 					
 					if USE_TQDM:
 						progress_bars[key].set_description(f"[{key.upper()}] Concluído")
 						progress_bars[key].update(1)
 						progress_bars[key].close()
+					else:
+						print(msg)
 
 				except Exception as exc:
 					err_msg = f"[{key.upper()}] Falha: {exc}"
 					LOGGER.error(err_msg)
 					if USE_TQDM:
-						progress_bars[key].set_description(f"[{key.upper()}] Erro")
+						progress_bars[key].set_description(f"[{key.upper()}] ERRO")
 						progress_bars[key].close()
+					else:
+						print(err_msg)
 		
 		# Tier 2: Dependent Tasks (Indices Calculados need INMET)
 		# We run this sequentially after Tier 1 to ensure INMET is ready
@@ -598,13 +611,37 @@ def download_all(
 	"""
 	Orquestra o download/processamento de todas as fontes para um ou mais municípios.
 	"""
-	# Configure logging 
-	root_logger = logging.getLogger()
-	if not root_logger.handlers:
-		logging.basicConfig(
-			level=getattr(logging, log_level.upper(), logging.INFO),
-			format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-		)
+	# Make sure loggers are clean to avoid multiplication in notebooks
+	# --- LOGGING SETUP (Idempotent for Notebooks) ---
+	# We use a specific logger for the application to avoid messing with Root logger
+	# which might be used by Jupyter itself.
+	logger_name = "src.baixar_dados.download_all"
+	app_logger = logging.getLogger(logger_name)
+	
+	# Clear existing handlers to prevent duplication on re-runs
+	if app_logger.hasHandlers():
+		app_logger.handlers.clear()
+	
+	# Prevent propagation to root logger (which might echo to stderr)
+	app_logger.propagate = False
+	
+	# Create a clean handler
+	handler = logging.StreamHandler()
+	formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
+	handler.setFormatter(formatter)
+	app_logger.addHandler(handler)
+	app_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+	
+	# Force other libraries to be quiet
+	logging.getLogger("urllib3").setLevel(logging.WARNING)
+	logging.getLogger("requests").setLevel(logging.WARNING)
+	logging.getLogger("fiona").setLevel(logging.WARNING)
+	
+	# Re-assign the global LOGGER for this module scope (if used elsewhere)
+	global LOGGER
+	LOGGER = app_logger
+	
+	LOGGER.info("Iniciando download_all (Logger Fixed)...")
 
 	start_date = _parse_any_date(start) if isinstance(start, str) else start
 	end_date = _parse_any_date(end) if isinstance(end, str) else end
@@ -649,6 +686,38 @@ def download_all(
 		LOGGER.warning("Nenhum shapefile encontrado para processar.")
 		return pd.DataFrame()
 
+	# Pre-load IBGE metadata for filename generation
+	cod_to_name = {}
+	try:
+		ibge_path = HERE.parent.parent / "data/utils/municipios_ibge.csv"
+		if not ibge_path.exists():
+			ibge_path = Path("data/utils/municipios_ibge.csv")
+		
+		if ibge_path.exists():
+			meta_df = pd.read_csv(ibge_path, dtype={"codigo_ibge": str})
+			# Create dict: 7-digit code -> Clean Name
+			import unicodedata
+			import re
+			
+			def clean_name(name):
+				if not isinstance(name, str): return "unknown"
+				# Remove accents
+				nfkd_form = unicodedata.normalize('NFKD', name)
+				only_ascii = nfkd_form.encode('ASCII', 'ignore').decode('utf-8')
+				# Replace spaces with underscores and remove non-alphanumeric
+				only_ascii = re.sub(r'[^a-zA-Z0-9\s]', '', only_ascii)
+				return only_ascii.strip().replace(' ', '_')
+
+			for _, row in meta_df.iterrows():
+				cod = str(row["codigo_ibge"]).zfill(7)
+				muni_name = clean_name(row["Nome_Município"])
+				cod_to_name[cod] = muni_name
+	except Exception as e:
+		LOGGER.error(f"FATAL: Erro ao carregar metadados para nome de arquivos: {e}")
+		cod_to_name = {} # fallback empty
+
+	LOGGER.info(f"Metadados carregados para {len(cod_to_name)} municípios.")
+
 	orchestrator = DownloadOrchestrator(max_workers=max_workers)
 	all_frames: List[pd.DataFrame] = []
 	
@@ -670,88 +739,31 @@ def download_all(
 			combined = apply_output_schema(combined, schema_cols)
 
 		if write_per_municipio:
-			out_per_muni = output_dir_path / "final" / "by_municipio" / f"final_{codibge}.csv"
+			# Determine filename parts
+			muni_clean = cod_to_name.get(codibge, "unknown")
+			disease_clean = disease.strip().replace(' ', '_').lower()
+			
+			# New filename format: {ibge}_{municipio}_{doenca}.csv
+			filename = f"{codibge}_{muni_clean}_{disease_clean}.csv"
+			out_per_muni = output_dir_path / "final" / "by_municipio" / filename
+			
+			LOGGER.info(f"Gerando arquivo em: {out_per_muni}")
+			
 			out_per_muni.parent.mkdir(parents=True, exist_ok=True)
 			combined.to_csv(out_per_muni, index=False)
 			LOGGER.info(f"CSV final do município gerado -> {out_per_muni}")
 			
 		all_frames.append(combined)
 
-	# Global Merge
+	# Global Merge (SKIPPED as per user request to save only individually)
+	# But we return the concatenated dataframe for the notebook
 	df_all = pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
-	if df_all.empty:
-		LOGGER.warning("Nenhum dado foi gerado.")
-		return df_all
-
-	# Groupby final to remove duplicates
-	key = ["codigo_ibge", "date"]
-	df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.normalize()
-	df_all = df_all.dropna(subset=["date"]).reset_index(drop=True)
 	
-	numeric_cols = [c for c in df_all.columns if c not in key and pd.api.types.is_numeric_dtype(df_all[c])]
-	agg = {c: "mean" for c in numeric_cols}
+	# Skip the rest of the global processing logic for file saving, 
+	# but we might want to return a valid dataframe for the caller.
 	
-	# Only aggregate if there are duplicates and key columns exist
-	key_present = [k for k in key if k in df_all.columns]
-	if len(key_present) == len(key):
-		if df_all.duplicated(subset=key).any():
-			df_all = df_all.groupby(key, as_index=False).agg(agg).sort_values(key).reset_index(drop=True)
-	else:
-		LOGGER.warning(f"Colunas chave {key} ausentes. Pulasdo agregação de duplicatas. Colunas presentes: {list(df_all.columns)}")
-	
-	# Final Schema Check
-	if final_schema_norm == "reference" and schema_cols is not None:
-		# Note: schema_cols might not have municipio/uf if reference didn't have them.
-		df_all = apply_output_schema(df_all, schema_cols)
-
-	# Enrich with Metadata (Municipio, UF) - Done AFTER schema to ensure they are not dropped
-	try:
-		ibge_path = HERE.parent.parent / "data/utils/municipios_ibge.csv" # Adjusted path relative to src/baixar_dados
-		if not ibge_path.exists():
-             # Fallback: try absolute or other relative
-			ibge_path = Path("data/utils/municipios_ibge.csv")
-            
-		if ibge_path.exists():
-			meta = pd.read_csv(ibge_path, dtype={"codigo_ibge": str})
-			# Ensure 7 digits
-			meta["codigo_ibge"] = meta["codigo_ibge"].str.zfill(7)
-			
-            # Ensure df_all has codigo_ibge (apply_output_schema might have renamed/preserved it)
-			if "codigo_ibge" in df_all.columns:
-				df_all["codigo_ibge"] = df_all["codigo_ibge"].astype(str).str.zfill(7)
-				df_all = df_all.merge(meta[["codigo_ibge", "Nome_Município", "Nome_UF"]], on="codigo_ibge", how="left")
-				df_all = df_all.rename(columns={"Nome_Município": "municipio", "Nome_UF": "uf"})
-				
-				# Reorder: codigo_ibge, municipio, uf, date, ... rest
-				output_cols = ["codigo_ibge", "municipio", "uf", "date"]
-				# Handle case if date/codibge were missing or diff named
-				final_cols = []
-				for c in output_cols:
-					if c in df_all.columns:
-						final_cols.append(c)
-				
-				rest = [c for c in df_all.columns if c not in final_cols]
-				df_all = df_all[final_cols + rest]
-			else:
-				LOGGER.warning("Coluna 'codigo_ibge' perdida após aplicação do schema. Não foi possível enriquecer metadados.")
-
-		else:
-			LOGGER.warning(f"Metadados IBGE não encontrados em {ibge_path}. Colunas municipio/uf não serão adicionadas.")
-	except Exception as e:
-		LOGGER.warning(f"Erro ao enriquecer com metadados: {e}")
-
-	if write_final:
-		final_csv_path.parent.mkdir(parents=True, exist_ok=True)
-		df_all.to_csv(final_csv_path, index=False)
-		
-		# Summary Report
-		n_munis = df_all["codigo_ibge"].nunique() if "codigo_ibge" in df_all.columns else 0
-		n_rows = len(df_all)
-		LOGGER.info("=" * 40)
-		LOGGER.info(f"RELATÓRIO FINAL:")
-		LOGGER.info(f"Municípios processados: {n_munis}")
-		LOGGER.info(f"Total de linhas geradas: {n_rows}")
-		LOGGER.info(f"Arquivo final unificado: {final_csv_path}")
-		LOGGER.info("=" * 40)
+	LOGGER.info("=" * 40)
+	LOGGER.info(f"RELATÓRIO FINAL: {len(all_frames)} municípios processados.")
+	LOGGER.info("=" * 40)
 
 	return df_all

@@ -24,7 +24,8 @@ def baixar_merra(
     conversion_function,
     aggregator,
     start_date=None,
-    end_date=None
+    end_date=None,
+    output_dir=None
 ):
 
     ####### CONSTANTS - DO NOT CHANGE BELOW THIS LINE #######
@@ -164,7 +165,13 @@ def baixar_merra(
         generated_URL = generate_download_links(years, database_url, database_id, parameter, start_date, end_date)
         download_manager = DownloadManager()
         download_manager.set_username_and_password(username, password)
-        download_manager.download_path = field_name + '/' + loc
+        
+        # Determine base path
+        base_path = field_name + '/' + loc
+        if output_dir:
+            base_path = os.path.join(str(output_dir), base_path)
+            
+        download_manager.download_path = base_path
         download_manager.download_urls = generated_URL
         start = time.time()
         download_manager.start_download(NUMBER_OF_CONNECTIONS)
@@ -202,7 +209,11 @@ def baixar_merra(
         print('Cleaning and merging ' + field_name + ' data for ' + loc)
         dfs = []
         failed_files = []
-        folder_path = os.path.join(field_name, loc)
+        
+        base_path = os.path.join(field_name, loc)
+        if output_dir:
+            base_path = os.path.join(str(output_dir), base_path)
+        folder_path = base_path
 
         if not os.path.exists(folder_path):
             raise RuntimeError(
@@ -275,15 +286,38 @@ def baixar_merra(
 
         df_hourly[field_name] = df_hourly[field_name].apply(conversion_function)
         df_hourly['date'] = pd.to_datetime(df_hourly['date'])
-        df_hourly.to_csv(field_name + '/' + loc + '_hourly.csv', header=[field_name, 'date', 'time'], index=False)
-        df_hourly = pd.read_csv(field_name + '/' + loc + '_hourly.csv')
+        
+        # Use base_path or output_dir logic for CSVs? 
+        # Ideally, we should output to the same request structure, or output_dir directly.
+        # But the code uses field_name/loc_hourly.csv.
+        # Let's keep consistency:
+        
+        # Correct logic:
+        # parent directory = output_dir/field_name if output_dir else field_name
+        # filename = loc + '_hourly.csv'
+        
+        parent_dir = field_name
+        if output_dir:
+            parent_dir = os.path.join(str(output_dir), parent_dir)
+            
+        # Ensure parent exists
+        os.makedirs(parent_dir, exist_ok=True)
+            
+        path_hourly = os.path.join(parent_dir, loc + '_hourly.csv')
+        path_daily = os.path.join(parent_dir, loc + '_daily.csv')
+        path_weekly = os.path.join(parent_dir, loc + '_weekly.csv')
+
+        df_hourly.to_csv(path_hourly, header=[field_name, 'date', 'time'], index=False)
+        
+        # Reloading is inefficient but kept for strict reproduction of original logic
+        df_hourly = pd.read_csv(path_hourly)
         
         # Aggregate ONLY the data column (ignore 'time' column which causes mean/agg failure)
         df_daily = df_hourly.groupby('date')[[field_name]].agg(aggregator)
         # df_daily = df_daily.drop('time', axis=1) # No longer needed as we selected only field_name
         
         df_daily['date'] = df_daily.index
-        df_daily.to_csv(field_name + '/' + loc + '_daily.csv', header=[field_name, 'date'], index=False)
+        df_daily.to_csv(path_daily, header=[field_name, 'date'], index=False)
         df_weekly = df_daily
         df_weekly['Week'] = pd.to_datetime(df_weekly['date']).apply(lambda x: x.isocalendar()[1])
         df_weekly['Year'] = pd.to_datetime(df_weekly['date']).apply(lambda x: x.year)
@@ -293,6 +327,6 @@ def baixar_merra(
         
         df_weekly['Year'] = df_weekly.index.get_level_values(0)
         df_weekly['Week'] = df_weekly.index.get_level_values(1)
-        df_weekly.to_csv(field_name + '/' + loc + '_weekly.csv', index=False)
+        df_weekly.to_csv(path_weekly, index=False)
 
     print('FINISHED')

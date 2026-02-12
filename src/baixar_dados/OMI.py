@@ -71,9 +71,9 @@ class OMIDownloader:
             group = product_info.get("grid_group")
             var_name = product_info.get("variable")
             
-            LOGGER.info(f"DEBUG: Processing {file_path}")
-            LOGGER.info(f"DEBUG: derived var_name='{var_name}', group='{group}'")
-            LOGGER.info(f"DEBUG: product_info keys: {list(product_info.keys())}")
+            # Group path for data fields
+            group = product_info.get("grid_group")
+            var_name = product_info.get("variable")
             
             
             # --- CRITICAL SECTION: HDF5 ACCESS ---
@@ -82,11 +82,12 @@ class OMIDownloader:
                 ds = None
                 try:
                     ds = xr.open_dataset(file_path, group=group, engine="netcdf4", decode_coords=False)
-                except Exception:
+                except Exception as e_netcdf:
+                    # LOGGER.warning(f"Falha ao abrir com engine='netcdf4': {e_netcdf}")
                     try:
-                        ds = xr.open_dataset(file_path, group=group, engine="h5netcdf", decode_coords=False)
-                    except Exception as e:
-                        LOGGER.warning(f"Erro ao abrir {file_path} (group={group}): {e}")
+                        ds = xr.open_dataset(file_path, group=group, decode_coords=False)
+                    except Exception as e_fallback:
+                        LOGGER.warning(f"Erro ao abrir {file_path} (group={group}): {e_fallback}. Erro original (netcdf4): {e_netcdf}")
                         return None
                 
                 if var_name not in ds:
@@ -227,10 +228,8 @@ class OMIDownloader:
                     date_str = date_str.replace('m', '') # 20230101
                     f_date = datetime.strptime(date_str, "%Y%m%d").date()
                 except:
-                    LOGGER.warning(f"Data não extraída de {fname}")
                     continue
                 
-                LOGGER.info(f"Processando {pol_key} - {f_date}")
                 stats = self._process_file(fpath, info, bbox)
                 
                 if stats:

@@ -176,13 +176,6 @@ class MERRA2Downloader:
         combined.to_csv(output_path, index=False)
         LOGGER.info("CSV final gerado -> %s", output_path)
 
-        # Optional: save a copy to default location if different
-        default_final_csv = self.OUTPUT_ROOT / f"{Path(shapefile_path).stem}_final.csv"
-        if default_final_csv.resolve() != output_path.resolve():
-            default_final_csv.parent.mkdir(parents=True, exist_ok=True)
-            combined.to_csv(default_final_csv, index=False)
-            LOGGER.info("Cópia adicional salva em -> %s", default_final_csv)
-
         if cleanup:
             self._clear_cache_root()
 
@@ -202,23 +195,24 @@ class MERRA2Downloader:
     ) -> pd.DataFrame:
         hourly_csv = self.cache_dir / var_name / f"{loc_label}_hourly.csv"
 
+
         if force_download or not hourly_csv.exists():
             try:
-                with self._temporary_workdir(self.cache_dir):
-                    baixar_merra(
-                        username=self.username,
-                        password=self.password,
-                        years=years,
-                        field_id=config.field_id,
-                        field_name=var_name,
-                        database_name=config.dataset_name,
-                        database_id=config.dataset_id,
-                        locs=[(loc_label, lat, lon)],
-                        conversion_function=self._identity,
-                        aggregator="mean",
-                        start_date=start_date,
-                        end_date=end_date,
-                    )
+                baixar_merra(
+                    username=self.username,
+                    password=self.password,
+                    years=years,
+                    field_id=config.field_id,
+                    field_name=var_name,
+                    database_name=config.dataset_name,
+                    database_id=config.dataset_id,
+                    locs=[(loc_label, lat, lon)],
+                    conversion_function=self._identity,
+                    aggregator="mean",
+                    start_date=start_date,
+                    end_date=end_date,
+                    output_dir=self.cache_dir
+                )
             except AuthenticationError:
                 raise
             except Exception as exc:
@@ -294,15 +288,7 @@ class MERRA2Downloader:
         sanitized = "".join(ch if ch.isalnum() else "_" for ch in stem)
         return sanitized or "merra_location"
 
-    @contextmanager
-    def _temporary_workdir(self, path: Path):
-        previous = Path.cwd()
-        path.mkdir(parents=True, exist_ok=True)
-        os.chdir(path)
-        try:
-            yield
-        finally:  # pragma: no cover - simple filesystem op
-            os.chdir(previous)
+
 
 
 if __name__ == "__main__":

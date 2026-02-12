@@ -31,6 +31,7 @@ Este projeto automatiza a coleta, processamento e consolidação de dados ambien
 ### Pré-requisitos
 - Python 3.11
 - Bibliotecas em requirements.txt
+- Ao menos 10Gb de espaço livres para processamentos em massa
 
 ### Instalação das Dependências
 ```bash

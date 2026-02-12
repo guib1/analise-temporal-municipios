@@ -116,7 +116,7 @@ class CETESBDownloader:
         # O CRS original é geográfico (lat/lon), então o centroide é em graus.
         # Para distância precisa, idealmente projetaríamos, mas para "mais próximo" em SP,
         # a distância euclidiana em graus funciona razoavelmente bem.
-        centroid = gdf.geometry.centroid.iloc[0]
+        centroid = gdf.to_crs(epsg=3857).geometry.centroid.to_crs(epsg=4326).iloc[0]
         
         # Calcula distância Euclidiana simples (graus)
         # d = sqrt((lat1-lat2)^2 + (lon1-lon2)^2)

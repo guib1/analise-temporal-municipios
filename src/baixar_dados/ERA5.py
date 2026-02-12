@@ -242,12 +242,22 @@ class ERA5Downloader:
                 shutil.move(temp_download, output_nc)
                 
             if os.path.exists(temp_download):
-                os.remove(temp_download)
+                try:
+                    os.remove(temp_download)
+                except OSError:
+                    pass
 
         except Exception as e:
             if 'required licences not accepted' in str(e):
                 LOGGER.error("Copernicus license not accepted.")
                 LOGGER.error("Please visit https://cds.climate.copernicus.eu/cdsapp/#!/terms/licences-to-use-copernicus-products to accept the terms.")
+            
+            # Clean up temp_download if it exists and we are failing
+            if 'temp_download' in locals() and os.path.exists(temp_download):
+                try:
+                    os.remove(temp_download)
+                except OSError:
+                    pass
             raise
         LOGGER.info("Download complete -> %s", output_nc)
 
@@ -311,7 +321,11 @@ class ERA5Downloader:
         
         os.makedirs(os.path.dirname(out_csv) or '.', exist_ok=True)
         final.to_csv(out_csv, index=False)
-        LOGGER.info('CSV generated -> %s', out_csv)
+        LOGGER.info('CSV generated -> %s (Shape: %s)', out_csv, final.shape)
+        if final.empty:
+            LOGGER.warning("⚠️ ERA5 DataFrame is empty!")
+        else:
+            LOGGER.debug("ERA5 Head:\n%s", final.head(2))
         return final
 
     def _aggregate_point(self, ds: xr.Dataset, coords: List[Tuple[float, float]], ibge_code: Optional[int] = None) -> pd.DataFrame:
@@ -323,7 +337,7 @@ class ERA5Downloader:
             dmin = sel.resample(time='1D').min()
             dmean = sel.resample(time='1D').mean()
             df = pd.DataFrame({
-                'date': pd.to_datetime(dmean['time'].values),
+                'date': pd.to_datetime(dmean['time'].values).normalize(),
                 'rnet_max': dmax['rnet'].values,
                 'rnet_min': dmin['rnet'].values,
                 'rnet_mea': dmean['rnet'].values,
