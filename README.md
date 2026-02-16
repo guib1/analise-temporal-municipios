@@ -29,9 +29,10 @@ Este projeto automatiza a coleta, processamento e consolidação de dados ambien
 ## 🛠️ Instalação
 
 ### Pré-requisitos
+- **Sistema Operacional: Linux** (o projeto **não é compatível** com Windows ou macOS)
 - Python 3.11
 - Bibliotecas em requirements.txt
-- Ao menos 10Gb de espaço livres para processamentos em massa
+- Ao menos 10 GB de espaço livres para processamentos em massa
 
 ### Instalação das Dependências
 ```bash
