@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from src.utils.geo import parse_date, format_ddmmyyyy, get_ibge_code_str
+from src.baixar_dados.DATASUS import DISEASE_CID10_MAP
 
 
 LOGGER = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class ShapefileTarget:
 	shapefile_path: Path
 	codibge: Optional[str]
 
-SUPPORTED_DISEASES = ("asma",)
+SUPPORTED_DISEASES = tuple(sorted(DISEASE_CID10_MAP.keys()))
 INMET_OUTPUT_COLUMNS = [
 	"codigo_ibge",
 	"date",
@@ -43,6 +44,25 @@ INMET_OUTPUT_COLUMNS = [
 	"heatindex_max",
 	"heatindex_min",
 	"heatindex_mea",
+]
+
+DATASUS_OUTPUT_COLUMNS = [
+	"codigo_ibge",
+	"date",
+	"cases_sum",
+	"deaths_sum",
+	"age_0_sum",
+	"age_1_10_sum",
+	"age_11_20_sum",
+	"age_21_30_sum",
+	"age_31_40_sum",
+	"age_41_50_sum",
+	"age_51_60_sum",
+	"age_61_70_sum",
+	"age_m70_sum",
+	"man_sum",
+	"woman_sum",
+	"unknownsex_sum",
 ]
 
 
@@ -381,19 +401,17 @@ class DownloadOrchestrator:
 					return pd.DataFrame()
 					
 				mod = _load_module_from_path("DATASUS_module", HERE / "DATASUS.py")
-				disease_norm = disease.strip().lower()
+				disease_norm = disease.strip().lower().replace(" ", "_")
 				# Special filename for DATASUS
 				out_csv = output_dir / "datasus" / f"datasus_{disease_norm}_daily_{codibge_norm}.csv"
 				
-				if disease_norm == "asma":
-					df = mod.DataSUSDownloader().fetch_sih_asthma_daily(
-						cod_ibge=codibge_norm,
-						start=start,
-						end=end,
-						output_csv=out_csv
-					)
-				else:
-					raise ValueError(f"Doença não suportada: {disease}")
+				df = mod.DataSUSDownloader().fetch_sih_daily(
+					cod_ibge=codibge_norm,
+					start=start,
+					end=end,
+					disease=disease_norm,
+					output_csv=out_csv,
+				)
 
 			elif key == "indices":
 				# Dependente do INMET
@@ -423,7 +441,12 @@ class DownloadOrchestrator:
 				return pd.DataFrame()
 
 			# Standardization and saving
-			expected_cols = INMET_OUTPUT_COLUMNS if key == "inmet" else None
+			if key == "inmet":
+				expected_cols = INMET_OUTPUT_COLUMNS
+			elif key == "datasus":
+				expected_cols = DATASUS_OUTPUT_COLUMNS
+			else:
+				expected_cols = None
 			return _write_source_csv(
 				df=df,
 				out_csv=out_csv,
@@ -438,6 +461,14 @@ class DownloadOrchestrator:
 			LOGGER.error(f"[{key.upper()}] Erro ao processar {codibge_norm}: {exc}")
 			LOGGER.debug(traceback.format_exc())
 			
+			# Determine expected columns for the error fallback too
+			if key == "inmet":
+				err_cols = INMET_OUTPUT_COLUMNS
+			elif key == "datasus":
+				err_cols = DATASUS_OUTPUT_COLUMNS
+			else:
+				err_cols = None
+			
 			# Ensure empty file is written to avoid pipeline breakage
 			return _write_source_csv(
 				df=pd.DataFrame(),
@@ -446,8 +477,10 @@ class DownloadOrchestrator:
 				source=key,
 				start=start,
 				end=end,
-				expected_columns=INMET_OUTPUT_COLUMNS if key == "inmet" else None
+				expected_columns=err_cols
 			)
+
+	ALL_SOURCES = ("cetesb", "inmet", "era5", "merra2", "tropomi", "modis", "omi", "datasus")
 
 	def process_municipio(
 		self,
@@ -456,7 +489,8 @@ class DownloadOrchestrator:
 		end: date,
 		output_dir: Path,
 		cache_dir: Path,
-		disease: str
+		disease: str,
+		sources: Optional[Sequence[str]] = None,
 	) -> Tuple[str, Dict[str, Path], pd.DataFrame]:
 		"""Orquestra o download paralelo para um único município."""
 		
@@ -485,7 +519,15 @@ class DownloadOrchestrator:
 		
 		# Tier 1: Independent Tasks
 		# INMET is in Tier 1 but required for Tier 2
-		tier1_keys = ["cetesb", "inmet", "era5", "merra2", "tropomi", "modis", "omi", "datasus"]
+		all_tier1 = ["cetesb", "inmet", "era5", "merra2", "tropomi", "modis", "omi", "datasus"]
+		if sources is not None:
+			# Filter to only requested sources, but always keep inmet if indices is requested
+			allowed = set(s.lower() for s in sources)
+			if "indices" in allowed:
+				allowed.add("inmet")  # indices depends on inmet
+			tier1_keys = [k for k in all_tier1 if k in allowed]
+		else:
+			tier1_keys = all_tier1
 		
 		# TQDM for visualization (auto-detects notebook/console)
 		try:
@@ -557,10 +599,14 @@ class DownloadOrchestrator:
 		
 		# Tier 2: Dependent Tasks (Indices Calculados need INMET)
 		# We run this sequentially after Tier 1 to ensure INMET is ready
-		LOGGER.info("[INDICES] Iniciando cálculo de índices (depende do INMET)...")
-		frames["indices"] = self._run_scraper(
-			"indices", target, start, end, output_dir, cache_dir, disease, context={"inmet": frames.get("inmet")}
-		)
+		run_indices = sources is None or "indices" in set(s.lower() for s in sources)
+		if run_indices:
+			LOGGER.info("[INDICES] Iniciando cálculo de índices (depende do INMET)...")
+			frames["indices"] = self._run_scraper(
+				"indices", target, start, end, output_dir, cache_dir, disease, context={"inmet": frames.get("inmet")}
+			)
+		else:
+			LOGGER.info("[INDICES] Pulando (não selecionado pelo usuário).")
 		
 		# Merge all
 		shp = target.shapefile_path
@@ -573,9 +619,38 @@ class DownloadOrchestrator:
 		for k, df_frame in frames.items():
 			if df_frame is not None and not df_frame.empty:
 				df_frame["codigo_ibge"] = codibge_norm
-		
+
+		# Collect column provenance BEFORE merge (for seletivo filtering)
+		_source_cols: Dict[str, set] = {}
+		for k, df_frame in frames.items():
+			if df_frame is not None and not df_frame.empty:
+				_source_cols[k] = set(df_frame.columns) - {"codigo_ibge", "date"}
+
 		combined = _merge_sources(codibge_norm, start, end, frames)
-		
+
+		# ── Seletivo column filtering ──
+		# When specific sources are selected, keep ONLY columns that
+		# originated from those sources (+ date/codigo_ibge).
+		if sources is not None:
+			allowed_cols = {"codigo_ibge", "date"}
+			for cols in _source_cols.values():
+				allowed_cols |= cols
+			# _merge_sources may prefix columns on collision (e.g. "merra2_o3omi_max");
+			# keep those too if their source was selected.
+			selected_keys = {s.lower() for s in sources}
+			if run_indices:
+				selected_keys.add("indices")
+			combined = combined[[
+				c for c in combined.columns
+				if c in allowed_cols
+				or any(c.startswith(f"{sk}_") for sk in selected_keys)
+			]]
+			LOGGER.info(
+				"[SELETIVO] Colunas filtradas: %d colunas de %s",
+				len(combined.columns) - 2,  # minus date + codigo_ibge
+				", ".join(sorted(_source_cols.keys())).upper(),
+			)
+
 		# Limpeza de Cache (Cleanup)
 		# Se tudo correu bem e cache_subdir foi definido, apagamos o cache deste município
 		try:
@@ -606,7 +681,8 @@ def download_all(
 	final_schema: str = "reference",
 	schema_csv: str | Path | None = None,
 	log_level: str = "INFO",
-	max_workers: int = 3
+	max_workers: int = 3,
+	sources: Sequence[str] | None = None,
 ) -> pd.DataFrame:
 	"""
 	Orquestra o download/processamento de todas as fontes para um ou mais municípios.
@@ -657,8 +733,8 @@ def download_all(
 
 	# Schema validation
 	final_schema_norm = str(final_schema).strip().lower()
-	if final_schema_norm not in {"all", "inmet", "reference"}:
-		raise ValueError("final_schema must be 'all', 'inmet', or 'reference'")
+	if final_schema_norm not in {"all", "reference", "seletivo"}:
+		raise ValueError("final_schema must be 'all', 'reference', or 'seletivo'")
 
 	schema_cols: Optional[List[str]] = None
 	if final_schema_norm == "reference":
@@ -730,13 +806,13 @@ def download_all(
 			output_dir=output_dir_path,
 			cache_dir=cache_dir_path,
 			disease=disease,
+			sources=sources,
 		)
 		
 		# Schema application per municipality
-		if final_schema_norm == "inmet":
-			combined = apply_output_schema(combined, INMET_OUTPUT_COLUMNS)
-		elif final_schema_norm == "reference" and schema_cols is not None:
+		if final_schema_norm == "reference" and schema_cols is not None:
 			combined = apply_output_schema(combined, schema_cols)
+		# "all" keeps all columns; "seletivo" already filtered in process_municipio
 
 		if write_per_municipio:
 			# Determine filename parts

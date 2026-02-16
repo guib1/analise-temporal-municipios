@@ -74,9 +74,9 @@ CETESB_PASSWORD=sua_senha
 
 O projeto foi desenhado para funcionar através de um **Jupyter Notebook interativo**, que atua como o frontend da aplicação.
 
-### 1. Interface Principal (`src/baixar_shapefiles.ipynb`)
+### 1. Interface Principal (`src/pipeline_caipora_main.ipynb`)
 
-1.  **Abra o Notebook**: Inicie o Jupyter e abra `src/baixar_shapefiles.ipynb`.
+1.  **Abra o Notebook**: Inicie o Jupyter e abra `src/pipeline_caipora_main.ipynb`.
 2.  **Passo 1: Seleção e Download do Shapefile**:
     *   Esta é a etapa pré-requisitada. O sistema precisa da geometria do município para recortar os dados de satélite.
     *   Nos menus interativos, escolha o **Estado** e o **Município**.

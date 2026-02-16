@@ -185,8 +185,23 @@ class INMETDownloader:
                     df = df_station.loc[mask].copy()
                     
                     if not df.empty:
-                        LOGGER.info(f"Successfully retrieved data from {station_name} ({station_id})")
-                        break
+                        # Check that the station actually has *some* non-NaN
+                        # measurement data; otherwise try the next candidate.
+                        measurement_cols = [
+                            c for c in ['RAD_GLO', 'CHUVA', 'TEM_MAX', 'TEM_MIN',
+                                         'TEM_INS', 'UMD_MIN', 'UMD_INS', 'VEN_VEL']
+                            if c in df.columns
+                        ]
+                        if measurement_cols and df[measurement_cols].notna().any().any():
+                            LOGGER.info(f"Successfully retrieved data from {station_name} ({station_id})")
+                            break
+                        else:
+                            LOGGER.warning(
+                                f"Station {station_id} has rows in the date range but "
+                                f"ALL measurement columns are NaN — skipping to next candidate."
+                            )
+                            df = pd.DataFrame()  # reset so loop continues
+                            continue
                     else:
                         min_dt = df_station['DT_MEDICAO'].min()
                         max_dt = df_station['DT_MEDICAO'].max()
@@ -371,6 +386,11 @@ class INMETDownloader:
         return []
 
 
+    # Maximum distance (in decimal degrees, ~1° ≈ 111 km) for nearest-station
+    # matching.  Stations beyond this threshold are unlikely to be representative
+    # of the municipality's weather.
+    MAX_STATION_DISTANCE_DEG = 2.0  # ~220 km
+
     def _find_nearest_stations(self, lat: float, lon: float, n: int = 5) -> List[dict]:
         stations = self._get_stations()
         if stations is None or stations.empty:
@@ -396,6 +416,15 @@ class INMETDownloader:
         stations['dist'] = np.sqrt(
             (stations[lat_col] - lat)**2 + (stations[lon_col] - lon)**2
         )
+
+        # Filter out stations beyond the maximum distance threshold
+        stations = stations[stations['dist'] <= self.MAX_STATION_DISTANCE_DEG]
+        if stations.empty:
+            LOGGER.warning(
+                f"No INMET stations within {self.MAX_STATION_DISTANCE_DEG}° "
+                f"(~{self.MAX_STATION_DISTANCE_DEG * 111:.0f} km) of ({lat:.4f}, {lon:.4f})."
+            )
+            return []
 
         stations['__tp_rank'] = (stations['TP_STATION'] != 'Automatic').astype(int)
         nearest = stations.sort_values(['__tp_rank', 'dist']).head(n).drop(columns=['__tp_rank'])
@@ -520,8 +549,10 @@ class INMETDownloader:
             agg_funcs['RAD_GLO'] = ['max', 'min', 'mean']
 
         # precipitation (CHUVA)
+        # NOTE: use a wrapper that sets min_count=1 so that
+        # all-NaN groups return NaN instead of the pandas default 0.0.
         if 'CHUVA' in df.columns:
-            agg_funcs['CHUVA'] = ['sum']
+            agg_funcs['CHUVA'] = [lambda x: x.sum(min_count=1)]
 
         # temperature (TEM_MAX, TEM_MIN, TEM_INS)
         if 'TEM_MAX' in df.columns:
@@ -552,10 +583,19 @@ class INMETDownloader:
         daily = df.groupby('DT_MEDICAO').agg(agg_funcs)
         
         # Flatten columns
-        daily.columns = ['_'.join(col).strip() for col in daily.columns.values]
+        daily.columns = ['_'.join(str(c) for c in col).strip() for col in daily.columns.values]
         daily = daily.reset_index()
         daily.rename(columns={'DT_MEDICAO': 'date'}, inplace=True)
-        
+
+        # The lambda aggregation for CHUVA produces a column named
+        # 'CHUVA_<lambda>' (or '<lambda_0>') instead of 'CHUVA_sum'.
+        # Normalise it so the rename map below finds the column.
+        daily.columns = [
+            c.replace('<lambda_0>', 'sum').replace('<lambda>', 'sum')
+            if 'CHUVA' in c else c
+            for c in daily.columns
+        ]
+
         # Rename to requested names (compatible with reference base)
         rename_map = {
             'RAD_GLO_max': 'globalradiation_max_kj',

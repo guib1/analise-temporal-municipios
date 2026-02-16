@@ -52,12 +52,174 @@ UF_BY_CODE = {
     "53": "DF",
 }
 
-# CID-10 codes that cover asthma diagnoses.
-# J45 = Asthma, J46 = Status asthmaticus (acute severe asthma).
-DEFAULT_ASMA_CODES = (
-    "J45", "J450", "J451", "J452", "J453", "J454", "J455", "J456", "J459",
-    "J46",
+# ═══════════════════════════════════════════════════════════════════════════
+# CID-10 codes by disease group
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Organizados em 3 grandes categorias conforme solicitado:
+#   • Respiratórias (J)
+#   • Cardiovasculares (I)
+#   • Cerebrovasculares (I + G)
+#
+# O filtro usa str.startswith(), então "J00" já captura J000, J001, etc.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ---------------------------------------------------------------------------
+# RESPIRATÓRIAS
+# ---------------------------------------------------------------------------
+
+# IVAS – Infecções Agudas das Vias Aéreas Superiores
+# J00 = Nasofaringite aguda (resfriado comum)
+# J01 = Sinusite aguda
+# J02 = Faringite aguda
+# J03 = Amigdalite aguda
+# J04 = Laringite e traqueíte agudas
+# J05 = Laringite obstrutiva aguda (crupe) e epiglotite
+# J06 = Infecções agudas das VAS de localizações múltiplas / não especificadas
+DEFAULT_IVAS_CODES = (
+    "J00", "J01", "J02", "J03", "J04", "J05", "J06",
 )
+
+# Influenza / Gripe
+# J09 = Influenza devida a vírus zoonótico ou pandêmico identificado (H1N1, H5N1, etc.)
+# J10 = Influenza devida a outro vírus da influenza identificado
+# J11 = Influenza devida a vírus não identificado
+DEFAULT_INFLUENZA_CODES = (
+    "J09", "J10", "J11",
+)
+
+# Pneumonia
+# J12 = Pneumonia viral não classificada em outra parte
+# J13 = Pneumonia devida a Streptococcus pneumoniae
+# J14 = Pneumonia devida a Haemophilus influenzae
+# J15 = Pneumonia bacteriana não classificada em outra parte
+# J16 = Pneumonia devida a outros microrganismos infecciosos
+# J17 = Pneumonia em doenças classificadas em outra parte
+# J18 = Pneumonia por microrganismo não especificado
+DEFAULT_PNEUMONIA_CODES = (
+    "J12", "J13", "J14", "J15", "J16", "J17", "J18",
+)
+
+# Infecções Agudas das Vias Aéreas Inferiores
+# J20 = Bronquite aguda
+# J21 = Bronquiolite aguda
+# J22 = Infecção aguda não especificada das vias aéreas inferiores
+DEFAULT_INFEC_VIAS_AEREAS_INF_CODES = (
+    "J20", "J21", "J22",
+)
+
+# Rinite Alérgica e Sinusite Crônica
+# J30 = Rinite alérgica e vasomotora
+# J32 = Sinusite crônica
+DEFAULT_RINITE_SINUSITE_CODES = (
+    "J30", "J32",
+)
+
+# DPOC – Doença Pulmonar Obstrutiva Crônica (inclui Bronquiectasia)
+# J40 = Bronquite não especificada como aguda ou crônica
+# J44 = Outras doenças pulmonares obstrutivas crônicas
+# J47 = Bronquiectasia
+DEFAULT_DPOC_CODES = (
+    "J40", "J44", "J47",
+)
+
+# Asma
+# J45 = Asma
+# J46 = Estado de mal asmático (status asthmaticus)
+DEFAULT_ASMA_CODES = (
+    "J45", "J46",
+)
+
+# ---------------------------------------------------------------------------
+# CARDIOVASCULARES
+# ---------------------------------------------------------------------------
+
+# Hipertensão Arterial
+# I10 = Hipertensão essencial (primária)
+# I11 = Doença cardíaca hipertensiva
+# I15 = Hipertensão secundária
+DEFAULT_HIPERTENSAO_CODES = (
+    "I10", "I11", "I15",
+)
+
+# Doença Isquêmica do Coração
+# I20 = Angina pectoris
+# I21 = Infarto agudo do miocárdio
+# I22 = Infarto do miocárdio recorrente
+# I24 = Outras doenças isquêmicas agudas do coração
+# I25 = Doença isquêmica crônica do coração
+DEFAULT_DOENCA_ISQUEMICA_CODES = (
+    "I20", "I21", "I22", "I24", "I25",
+)
+
+# Embolia Pulmonar
+# I26 = Embolia pulmonar
+DEFAULT_EMBOLIA_PULMONAR_CODES = (
+    "I26",
+)
+
+# Arritmias Cardíacas
+# I45 = Outros transtornos de condução
+# I47 = Taquicardia paroxística
+# I48 = Flutter e fibrilação atrial
+# I49 = Outras arritmias cardíacas
+DEFAULT_ARRITMIAS_CODES = (
+    "I45", "I47", "I48", "I49",
+)
+
+# Insuficiência Cardíaca
+# I50 = Insuficiência cardíaca
+DEFAULT_INSUFICIENCIA_CARDIACA_CODES = (
+    "I50",
+)
+
+# ---------------------------------------------------------------------------
+# CEREBROVASCULARES
+# ---------------------------------------------------------------------------
+
+# AVC – Acidente Vascular Cerebral
+# I60 = Hemorragia subaracnóidea
+# I61 = Hemorragia intracerebral
+# I62 = Outras hemorragias intracranianas não-traumáticas
+# I63 = Infarto cerebral
+# I64 = AVC não especificado como hemorrágico ou isquêmico
+# G45 = Acidentes isquêmicos cerebrais transitórios (AIT)
+DEFAULT_AVC_CODES = (
+    "I60", "I61", "I62", "I63", "I64", "G45",
+)
+
+# ---------------------------------------------------------------------------
+# Mapeamento doença → códigos CID-10
+# ---------------------------------------------------------------------------
+DISEASE_CID10_MAP: dict[str, tuple[str, ...]] = {
+    # Respiratórias
+    "ivas": DEFAULT_IVAS_CODES,
+    "influenza": DEFAULT_INFLUENZA_CODES,
+    "pneumonia": DEFAULT_PNEUMONIA_CODES,
+    "infec_vias_aereas_inf": DEFAULT_INFEC_VIAS_AEREAS_INF_CODES,
+    "rinite_sinusite": DEFAULT_RINITE_SINUSITE_CODES,
+    "dpoc": DEFAULT_DPOC_CODES,
+    "asma": DEFAULT_ASMA_CODES,
+    # Cardiovasculares
+    "hipertensao": DEFAULT_HIPERTENSAO_CODES,
+    "doenca_isquemica": DEFAULT_DOENCA_ISQUEMICA_CODES,
+    "embolia_pulmonar": DEFAULT_EMBOLIA_PULMONAR_CODES,
+    "arritmias": DEFAULT_ARRITMIAS_CODES,
+    "insuficiencia_cardiaca": DEFAULT_INSUFICIENCIA_CARDIACA_CODES,
+    # Cerebrovasculares
+    "avc": DEFAULT_AVC_CODES,
+}
+
+
+def get_cid10_codes(disease: str) -> tuple[str, ...]:
+    """Return CID-10 codes for a given disease key (case-insensitive)."""
+    key = disease.strip().lower().replace(" ", "_")
+    if key not in DISEASE_CID10_MAP:
+        raise ValueError(
+            f"Doença '{disease}' não suportada. "
+            f"Opções: {', '.join(sorted(DISEASE_CID10_MAP))}"
+        )
+    return DISEASE_CID10_MAP[key]
 
 def _read_parquet_directory(path: Path) -> Optional[List[pd.DataFrame]]:
     """Load all parquet files inside a directory as dataframes."""
@@ -285,24 +447,32 @@ class DataSUSDownloader:
         return df_month
 
     # --------------------------------------------------------------------- #
-    # Public API>
+    # Public API
     # --------------------------------------------------------------------- #
-    def fetch_sih_asthma_daily(
+    def fetch_sih_daily(
         self,
         cod_ibge: str | int,
         start: str | date | datetime,
         end: str | date | datetime,
-        cid10_prefixes: Sequence[str] = DEFAULT_ASMA_CODES,
+        disease: str = "asma",
+        cid10_prefixes: Sequence[str] | None = None,
         output_csv: str | Path | None = None,
     ) -> pd.DataFrame:
         """
-        Download SIH/SUS records for the given municipality and aggregate daily metrics.
+        Download SIH/SUS records for *any* supported disease and aggregate daily.
 
-        Notes
-        -----
-        - Daily aggregation is by admission date (DT_INTER) normalized to midnight.
-        - This is a true daily tally (not a weekly value expanded to days).
+        Parameters
+        ----------
+        disease : str
+            Key from ``DISEASE_CID10_MAP`` (e.g. "dengue", "malaria").
+            Ignored when *cid10_prefixes* is provided explicitly.
+        cid10_prefixes : sequence of str, optional
+            Override the CID-10 filter.  When ``None`` the codes are looked up
+            from ``DISEASE_CID10_MAP[disease]``.
         """
+        if cid10_prefixes is None:
+            cid10_prefixes = get_cid10_codes(disease)
+
         start_date = pd.to_datetime(start).date()
         end_date = pd.to_datetime(end).date()
         if start_date > end_date:
@@ -330,7 +500,9 @@ class DataSUSDownloader:
 
         if not frames:
             LOGGER.warning("No data downloaded for %s between %s and %s", code7, start, end)
-            return _empty_daily_dataframe()
+            empty = _empty_daily_dataframe(start_date, end_date)
+            empty["codigo_ibge"] = code7
+            return empty
 
         raw = pd.concat(frames, ignore_index=True)
         filtered = self._filter_records(
@@ -349,9 +521,23 @@ class DataSUSDownloader:
         )
         if filtered.empty:
             LOGGER.warning("No SIH records found for %s in the selected period", code7)
-            return _empty_daily_dataframe()
+            empty = _empty_daily_dataframe(start_date, end_date)
+            empty["codigo_ibge"] = code7
+            return empty
 
         aggregated = self._aggregate_daily(filtered)
+        aggregated["codigo_ibge"] = code7
+
+        # Reindex to the full date range so days without hospitalizations
+        # get 0 (zero cases) instead of NaN (unknown).
+        full_dates = pd.date_range(start_date, end_date, freq="D").normalize()
+        aggregated = aggregated.set_index("date").reindex(full_dates).rename_axis("date").reset_index()
+        # Fill numeric columns with 0 (no cases), keep codigo_ibge
+        numeric_cols = [
+            c for c in aggregated.columns
+            if c not in {"date", "codigo_ibge"}
+        ]
+        aggregated[numeric_cols] = aggregated[numeric_cols].fillna(0).astype(int)
         aggregated["codigo_ibge"] = code7
         aggregated = aggregated.sort_values("date").reset_index(drop=True)
 
@@ -362,6 +548,25 @@ class DataSUSDownloader:
             aggregated.to_csv(output_path, index=False)
 
         return aggregated
+
+    # Backward-compatible alias
+    def fetch_sih_asthma_daily(
+        self,
+        cod_ibge: str | int,
+        start: str | date | datetime,
+        end: str | date | datetime,
+        cid10_prefixes: Sequence[str] = DEFAULT_ASMA_CODES,
+        output_csv: str | Path | None = None,
+    ) -> pd.DataFrame:
+        """Convenience wrapper – delegates to ``fetch_sih_daily``."""
+        return self.fetch_sih_daily(
+            cod_ibge=cod_ibge,
+            start=start,
+            end=end,
+            disease="asma",
+            cid10_prefixes=cid10_prefixes,
+            output_csv=output_csv,
+        )
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -494,10 +699,17 @@ class DataSUSDownloader:
             ]
         ]
 
-def _empty_daily_dataframe() -> pd.DataFrame:
-    """Return an empty dataframe with the expected columns (daily schema)."""
-    columns = [
-        "date",
+def _empty_daily_dataframe(
+    start: date | None = None,
+    end: date | None = None,
+) -> pd.DataFrame:
+    """Return a dataframe with the expected columns filled with 0 for the full date range.
+
+    If *start* and *end* are provided, the frame covers every day in the
+    range (0 cases per day).  Otherwise an empty (no-row) frame is returned
+    for backward-compatibility.
+    """
+    numeric_cols = [
         "cases_sum",
         "deaths_sum",
         "age_0_sum",
@@ -512,9 +724,18 @@ def _empty_daily_dataframe() -> pd.DataFrame:
         "man_sum",
         "woman_sum",
         "unknownsex_sum",
-        "codigo_ibge",
     ]
-    return pd.DataFrame(columns=columns)
+    all_cols = ["date"] + numeric_cols + ["codigo_ibge"]
+
+    if start is not None and end is not None:
+        dates = pd.date_range(start, end, freq="D").normalize()
+        df = pd.DataFrame({"date": dates})
+        for col in numeric_cols:
+            df[col] = 0
+        df["codigo_ibge"] = pd.NA
+        return df
+
+    return pd.DataFrame(columns=all_cols)
 
 if __name__ == "__main__":
     # Basic manual test (requires network access and supporting libraries).
